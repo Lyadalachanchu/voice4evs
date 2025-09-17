@@ -12,6 +12,7 @@ from ocpp.v16.enums import RegistrationStatus, ChargePointStatus
 logging.basicConfig(level=logging.INFO)
 
 from shared_store import STORE
+from demo_scenarios import DEMO_MANAGER
 
 
 class CentralSystemCP(CP):
@@ -51,7 +52,18 @@ class CentralSystemCP(CP):
     @on('Authorize')
     async def on_authorize(self, id_tag, **kwargs):
         logging.info(f"[{self.id}] Authorize: idTag={id_tag}")
-        return call_result.Authorize(id_tag_info={"status": "Accepted"})
+        
+        # Check if we're in auth failure demo scenario
+        scenario = DEMO_MANAGER.get_scenario_status(self.id)
+        if scenario and scenario["type"] == "auth_failure":
+            logging.info(f"🎭 DEMO: Simulating auth failure for {id_tag}")
+            return call_result.Authorize(id_tag_info={"status": "Invalid"})
+        
+        # Check if card is in whitelist
+        if DEMO_MANAGER.is_card_valid(id_tag):
+            return call_result.Authorize(id_tag_info={"status": "Accepted"})
+        else:
+            return call_result.Authorize(id_tag_info={"status": "Invalid"})
 
     @on('StartTransaction')
     async def on_start_transaction(self, connector_id, id_tag, meter_start, timestamp, **kwargs):

@@ -11,6 +11,7 @@ COPY csms.py .
 COPY config.py .
 COPY rest_api.py .
 COPY shared_store.py .
+COPY demo_scenarios.py .
 
 # Expose ports
 EXPOSE 9000 8000

@@ -23,7 +23,7 @@ async def connect_to_csms():
                 logger.info("Connected to CSMS!")
                 await run_ocpp_protocol(ws)
                 return
-        except websockets.exceptions.ConnectionRefused:
+        except ConnectionRefusedError:
             logger.warning(f"Connection refused. Retrying in {retry_delay} seconds...")
             await asyncio.sleep(retry_delay)
         except Exception as e:
