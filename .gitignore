@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Environment
+.venv
+.env
+
+# VS Code
+.vscode/
+
+# macOS
+.DS_Store
+
+# Docker
+*.log
+docker-compose.override.yml
+
+# Others
+*.lock
+*.sqlite3
+
+# Node
+node_modules/
+
+# System
+Thumbs.db
