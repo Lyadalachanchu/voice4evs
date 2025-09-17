@@ -47,6 +47,8 @@ from pipecat.services.mistral.llm import MistralLLMService
 #from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 from pipecat.transports.daily.transport import DailyParams
+from csms_tools import get_tools, register_csms_function_handlers
+from csms_system_prompt import CSMS_SYSTEM_PROMPT
 
 logger.info("✅ All components loaded successfully!")
 
@@ -68,14 +70,18 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
 
     llm = MistralLLMService(api_key=os.getenv("MISTRAL_API_KEY"))
 
+    # Register CSMS function handlers and provide tool schemas to the LLM
+    register_csms_function_handlers(llm)
+
     messages = [
         {
             "role": "system",
-            "content": "You are a friendly AI assistant. Respond naturally and keep your answers conversational.",
+            "content": CSMS_SYSTEM_PROMPT,
         },
     ]
 
-    context = OpenAILLMContext(messages)
+    tools = get_tools()
+    context = OpenAILLMContext(messages, tools=tools)
     context_aggregator = llm.create_context_aggregator(context)
 
     rtvi = RTVIProcessor(config=RTVIConfig(config=[]))
