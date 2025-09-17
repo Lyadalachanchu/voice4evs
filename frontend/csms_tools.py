@@ -2,6 +2,7 @@ import os
 from typing import Any, Dict, Mapping, Optional
 
 import httpx
+import logging
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.services.llm_service import FunctionCallParams
@@ -9,6 +10,9 @@ from pipecat.frames.frames import FunctionCallResultProperties, LLMRunFrame
 
 
 API_BASE = os.getenv("CSMS_API_BASE", "http://localhost:8000")
+if not logging.getLogger().handlers:
+    logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 def _error_dict(message: str, *, status_code: Optional[int] = None, details: Optional[str] = None, request: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -268,6 +272,7 @@ def get_tools() -> ToolsSchema:
 
 async def _return_and_chain(params: FunctionCallParams, data: Dict[str, Any], *, chain_next: bool) -> None:
     if chain_next:
+        logger.info("Tool result added; scheduling immediate LLM re-run for follow-up decision")
         # CHAINING MODE:
         # - run_llm=False suppresses an immediate model completion (no filler speech).
         # - on_context_updated fires after the tool result is appended to context.
@@ -287,6 +292,7 @@ async def _return_and_chain(params: FunctionCallParams, data: Dict[str, Any], *,
 
 
 async def handle_reset_charge_point(params: FunctionCallParams) -> None:
+    logger.info(f"Tool call: reset_charge_point args={dict(params.arguments)}")
     cp_id = _normalize_cp_id(params.arguments)
     reset_type = params.arguments.get("type") or "Soft"
     data = await _post(f"/commands/reset/{cp_id}", {"type": reset_type})
@@ -294,6 +300,7 @@ async def handle_reset_charge_point(params: FunctionCallParams) -> None:
 
 
 async def handle_change_availability(params: FunctionCallParams) -> None:
+    logger.info(f"Tool call: change_availability args={dict(params.arguments)}")
     cp_id = _normalize_cp_id(params.arguments)
     payload: Dict[str, Any] = {"type": params.arguments["type"]}
     connector_id = _normalize_connector_id(params.arguments, default_if_missing=False)
@@ -304,6 +311,7 @@ async def handle_change_availability(params: FunctionCallParams) -> None:
 
 
 async def handle_change_configuration(params: FunctionCallParams) -> None:
+    logger.info(f"Tool call: change_configuration args={dict(params.arguments)}")
     cp_id = _normalize_cp_id(params.arguments)
     key = params.arguments.get("key")
     value = params.arguments.get("value")
@@ -317,6 +325,7 @@ async def handle_change_configuration(params: FunctionCallParams) -> None:
 
 
 async def handle_remote_start_transaction(params: FunctionCallParams) -> None:
+    logger.info(f"Tool call: remote_start_transaction args={dict(params.arguments)}")
     cp_id = _normalize_cp_id(params.arguments)
     id_tag = params.arguments.get("id_tag")
     err = _validate_non_empty_str("id_tag", id_tag)
@@ -332,6 +341,7 @@ async def handle_remote_start_transaction(params: FunctionCallParams) -> None:
 
 
 async def handle_remote_stop_transaction(params: FunctionCallParams) -> None:
+    logger.info(f"Tool call: remote_stop_transaction args={dict(params.arguments)}")
     cp_id = _normalize_cp_id(params.arguments)
     if "transaction_id" not in params.arguments:
         await params.result_callback(_error_dict("Missing 'transaction_id'"))
@@ -342,6 +352,7 @@ async def handle_remote_stop_transaction(params: FunctionCallParams) -> None:
 
 
 async def handle_unlock_connector(params: FunctionCallParams) -> None:
+    logger.info(f"Tool call: unlock_connector args={dict(params.arguments)}")
     cp_id = _normalize_cp_id(params.arguments)
     connector_id = _normalize_connector_id(params.arguments, default_if_missing=True)
     payload = {"connector_id": connector_id}
@@ -350,6 +361,7 @@ async def handle_unlock_connector(params: FunctionCallParams) -> None:
 
 
 async def handle_send_local_list(params: FunctionCallParams) -> None:
+    logger.info(f"Tool call: send_local_list args={dict(params.arguments)}")
     cp_id = _normalize_cp_id(params.arguments)
     id_tag = params.arguments.get("id_tag")
     err = _validate_non_empty_str("id_tag", id_tag)
@@ -364,6 +376,7 @@ async def handle_send_local_list(params: FunctionCallParams) -> None:
 
 
 async def handle_trigger_demo_scenario(params: FunctionCallParams) -> None:
+    logger.info(f"Tool call: trigger_demo_scenario args={dict(params.arguments)}")
     scenario = params.arguments["scenario"]
     cp_id = _normalize_cp_id(params.arguments) if params.arguments.get("cp_id") is not None else None
     query_params: Dict[str, Any] = {"cp_id": cp_id} if cp_id else None
@@ -372,11 +385,13 @@ async def handle_trigger_demo_scenario(params: FunctionCallParams) -> None:
 
 
 async def handle_list_demo_scenarios(params: FunctionCallParams) -> None:
+    logger.info(f"Tool call: list_demo_scenarios args={dict(params.arguments)}")
     data = await _get("/demo/scenarios")
     await _return_and_chain(params, data, chain_next=False)
 
 
 async def handle_clear_demo_scenarios(params: FunctionCallParams) -> None:
+    logger.info(f"Tool call: clear_demo_scenarios args={dict(params.arguments)}")
     cp_id = params.arguments.get("cp_id")
     query_params: Dict[str, Any] = {"cp_id": cp_id} if cp_id else None
     data = await _post("/demo/clear", json={}, params=query_params)
@@ -384,6 +399,7 @@ async def handle_clear_demo_scenarios(params: FunctionCallParams) -> None:
 
 
 async def handle_get_status(params: FunctionCallParams) -> None:
+    logger.info(f"Tool call: get_status args={dict(params.arguments)}")
     data = await _get("/status")
     await _return_and_chain(params, data, chain_next=False)
 
