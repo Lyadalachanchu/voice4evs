@@ -1,0 +1,25 @@
+services:
+  csms:
+    build: .
+    container_name: csms
+    ports:
+      - "9000:9000" # OCPP WebSocket endpoint
+      - "8000:8000" # REST API
+    environment:
+      - CSMS_HOST=0.0.0.0
+      - CSMS_PORT=9000
+      - CSMS_PATH=/ocpp
+
+  ocpp-simulator:
+    image: python:3.11-slim
+    container_name: ocpp-simulator
+    working_dir: /app
+    volumes:
+      - ./cp_sim.py:/app/cp_sim.py
+      - ./requirements.txt:/app/requirements.txt
+    command: >
+      sh -c "pip install -r requirements.txt && python cp_sim.py"
+    depends_on:
+      - csms
+    environment:
+      - PYTHONUNBUFFERED=1

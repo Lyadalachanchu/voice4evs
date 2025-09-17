@@ -1,0 +1,19 @@
+modules:
+  OCPP:
+    module: ocpp
+    config:
+      ocpp_version: ocpp1.6
+      CentralSystemURI: ws://csms:9000/EVSE001
+      charge_point_id: EVSE001
+      heartbeat_interval: 30
+      connections: {}
+
+  EvseManager:
+    module: evse_manager
+    config:
+      evse_id: "EVSE001"
+      connectors: 1
+
+connections:
+  - from: EvseManager:ocpp
+    to: OCPP:ocpp

@@ -1,0 +1,4 @@
+websockets==11.0.3
+ocpp==1.0.0
+fastapi==0.112.0
+uvicorn==0.30.5
