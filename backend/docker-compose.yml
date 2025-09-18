@@ -10,12 +10,12 @@ services:
       - CSMS_PORT=9000
       - CSMS_PATH=/ocpp
 
-  ocpp-simulator:
+  ocpp-simulator-001:
     image: python:3.11-slim
-    container_name: ocpp-simulator
+    container_name: ocpp-simulator-001
     working_dir: /app
     volumes:
-      - ./cp_sim.py:/app/cp_sim.py
+      - ./cp_sim_EVSE001.py:/app/cp_sim.py
       - ./requirements.txt:/app/requirements.txt
     command: >
       sh -c "pip install -r requirements.txt && python cp_sim.py"
@@ -23,3 +23,64 @@ services:
       - csms
     environment:
       - PYTHONUNBUFFERED=1
+      - CP_ID=EVSE001
+
+  ocpp-simulator-002:
+    image: python:3.11-slim
+    container_name: ocpp-simulator-002
+    working_dir: /app
+    volumes:
+      - ./cp_sim_EVSE002.py:/app/cp_sim.py
+      - ./requirements.txt:/app/requirements.txt
+    command: >
+      sh -c "pip install -r requirements.txt && python cp_sim.py"
+    depends_on:
+      - csms
+    environment:
+      - PYTHONUNBUFFERED=1
+      - CP_ID=EVSE002
+
+  ocpp-simulator-003:
+    image: python:3.11-slim
+    container_name: ocpp-simulator-003
+    working_dir: /app
+    volumes:
+      - ./cp_sim_EVSE003.py:/app/cp_sim.py
+      - ./requirements.txt:/app/requirements.txt
+    command: >
+      sh -c "pip install -r requirements.txt && python cp_sim.py"
+    depends_on:
+      - csms
+    environment:
+      - PYTHONUNBUFFERED=1
+      - CP_ID=EVSE003
+
+  ocpp-simulator-004:
+    image: python:3.11-slim
+    container_name: ocpp-simulator-004
+    working_dir: /app
+    volumes:
+      - ./cp_sim_EVSE004.py:/app/cp_sim.py
+      - ./requirements.txt:/app/requirements.txt
+    command: >
+      sh -c "pip install -r requirements.txt && python cp_sim.py"
+    depends_on:
+      - csms
+    environment:
+      - PYTHONUNBUFFERED=1
+      - CP_ID=EVSE004
+
+  ocpp-simulator-005:
+    image: python:3.11-slim
+    container_name: ocpp-simulator-005
+    working_dir: /app
+    volumes:
+      - ./cp_sim_EVSE005.py:/app/cp_sim.py
+      - ./requirements.txt:/app/requirements.txt
+    command: >
+      sh -c "pip install -r requirements.txt && python cp_sim.py"
+    depends_on:
+      - csms
+    environment:
+      - PYTHONUNBUFFERED=1
+      - CP_ID=EVSE005

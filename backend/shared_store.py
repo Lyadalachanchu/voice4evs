@@ -5,6 +5,8 @@ class CentralStore:
         self.charge_points = {}      # id -> connection
         self.status = {}             # id -> latest StatusNotification payload
         self.heartbeat = {}          # id -> last heartbeat time
+        self.resolved_diagnostics = set()  # Set of charge point IDs with resolved diagnostic issues
+        self.diagnostic_config_changes = {}  # Track configuration changes for diagnostic resolution
 
 # Global store instance
 STORE = CentralStore()

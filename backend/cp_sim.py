@@ -69,7 +69,7 @@ async def run_ocpp_protocol(ws):
             response = await ws.recv()
             logger.info(f"Received: {response}")
             heartbeat_id += 1
-            await asyncio.sleep(30)
+            await asyncio.sleep(60)
             
     except websockets.exceptions.ConnectionClosed:
         logger.warning("Connection closed by CSMS")

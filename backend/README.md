@@ -125,7 +125,7 @@ curl -X POST http://localhost:8000/commands/unlock_connector/EVSE001 \
 
 Your system is currently running with:
 - **CSMS**: WebSocket server on port 9000, REST API on port 8000
-- **Charge Point Simulator**: `EVSE001` connected and sending heartbeats every 30 seconds
+- **Charge Point Simulator**: `EVSE001` connected and sending heartbeats every 60 seconds
 - **Status**: Available (ready for charging)
 
 ## System Management
@@ -159,68 +159,67 @@ docker-compose logs -f
 
 The system is fully functional and ready for testing OCPP 1.6 commands! The charge point simulator will continue running and responding to commands until you stop the Docker containers.
 
-## 🎭 Demo Scenarios for Voice Agent Testing
+## 🎭 Complex Demo Scenario for Voice Agent Testing
 
-The system includes **5 scriptable demo scenarios** that simulate real-world EV charging issues for voice agent demonstrations:
+The system includes a **complex diagnostic scenario** that requires multi-step analysis and specific command sequences to resolve:
 
-### Available Demo Scenarios
+### Charging Profile Mismatch Scenario
 
-#### 1. **Session Start Failure** - "It says it's available but nothing happens"
-- **Issue**: Charger shows `Available` but won't start transactions after authorization
-- **Voice Agent Solution**: Detects no power flow, sends `Reset(Soft)`, asks user to try again
-- **Demo Command**: `curl -X POST http://localhost:8000/demo/trigger/session_start_failure`
+#### **Issue**: "Charging is very slow - only getting 3.5kW instead of 22kW"
+- **Root Cause**: Conflicting charging profile configuration settings causing power delivery issues
+- **Complexity**: Requires diagnostic steps, configuration analysis, and specific command sequence
+- **Resolution Steps**: 6-step process involving status checks, configuration updates, and verification
 
-#### 2. **Stuck Connector** - "It won't unlock, I can't unplug"
-- **Issue**: Connector stays locked after charging with `ConnectorLockFailure`
-- **Voice Agent Solution**: Sends `UnlockConnector`, confirms user can remove cable
-- **Demo Command**: `curl -X POST http://localhost:8000/demo/trigger/stuck_connector`
+#### **Voice Agent Diagnostic Process**:
+1. **Diagnostic Phase**: Check status, ask user about power levels and error codes
+2. **Configuration Analysis**: Identify specific configuration conflicts
+3. **Resolution Phase**: Update 3 configuration parameters in sequence
+4. **Verification Phase**: Reset charger and confirm power delivery restored
 
-#### 3. **Offline Charger** - "The charger is offline"
-- **Issue**: No heartbeats, charger appears offline in app
-- **Voice Agent Solution**: Sends `Reset(Hard)`, waits for reconnection, files ticket if needed
-- **Demo Command**: `curl -X POST http://localhost:8000/demo/trigger/offline_charger`
+#### **Required Commands**:
+```bash
+# Trigger the complex scenario
+curl -X POST http://localhost:8000/demo/trigger/charging_profile_mismatch
 
-#### 4. **Auth Failure** - "It keeps saying my card is invalid"
-- **Issue**: `Authorize` returns `Invalid` for valid cards
-- **Voice Agent Solution**: Adds card to whitelist via `SendLocalList`, resets charger
-- **Demo Command**: `curl -X POST http://localhost:8000/demo/trigger/auth_failure`
+# Get resolution steps and guidance
+curl http://localhost:8000/demo/resolution_steps
 
-#### 5. **Slow Charging** - "Charging is very slow"
-- **Issue**: `MeterValues` show very low power output
-- **Voice Agent Solution**: Explains load sharing, tries `Reset(Soft)`, provides reassurance
-- **Demo Command**: `curl -X POST http://localhost:8000/demo/trigger/slow_charging`
+# Check progress during resolution
+curl http://localhost:8000/demo/progress/EVSE001
+```
 
 ### Demo Management Commands
 
 ```bash
-# List all available scenarios
+# List available scenarios
 curl http://localhost:8000/demo/scenarios
 
-# Trigger a specific scenario
-curl -X POST http://localhost:8000/demo/trigger/{scenario_name}
+# Trigger the complex scenario
+curl -X POST http://localhost:8000/demo/trigger/charging_profile_mismatch
 
-# Clear all active scenarios
+# Get detailed resolution steps and agent guidance
+curl http://localhost:8000/demo/resolution_steps
+
+# Check resolution progress
+curl http://localhost:8000/demo/progress/EVSE001
+
+# Clear active scenarios
 curl -X POST http://localhost:8000/demo/clear
-
-# Add a card to whitelist (for auth failure resolution)
-curl -X POST http://localhost:8000/commands/send_local_list/EVSE001 \
-  -H "Content-Type: application/json" \
-  -d '{"id_tag": "NEWCARD123", "status": "Accepted"}'
 ```
 
-### Automated Demo Script
+### Automated Complex Demo Script
 
-Run the complete demo sequence automatically:
+Run the complete complex diagnostic sequence automatically:
 
 ```bash
 # Install demo dependencies
 pip install aiohttp
 
-# Run all demo scenarios
-python demo_script.py
+# Run the complex demo scenario
+python complex_demo_script.py
 ```
 
-This will run through all 5 scenarios with realistic voice agent responses, showing how an automated system can resolve common EV charging issues.
+This will demonstrate the full diagnostic and resolution process, showing how a voice agent handles complex multi-step issues requiring specific command sequences.
 
 ## Troubleshooting
 

@@ -5,7 +5,7 @@ modules:
       ocpp_version: ocpp1.6
       CentralSystemURI: ws://csms:9000/EVSE001
       charge_point_id: EVSE001
-      heartbeat_interval: 30
+      heartbeat_interval: 60
       connections: {}
 
   EvseManager:
