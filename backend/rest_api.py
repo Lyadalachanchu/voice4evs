@@ -7,6 +7,7 @@ import json
 import logging
 from shared_store import STORE
 from demo_scenarios import DEMO_MANAGER
+from complex_demo_scenario import COMPLEX_DEMO
 
 app = FastAPI()
 
@@ -53,19 +54,59 @@ async def root():
             "POST /commands/remote_stop/{cp_id} - Stop charging remotely",
             "POST /commands/unlock_connector/{cp_id} - Unlock connector",
             "POST /commands/send_local_list/{cp_id} - Add card to whitelist",
-            "POST /demo/trigger/{scenario} - Trigger demo scenario",
+            "POST /demo/trigger/charging_profile_mismatch - Trigger complex diagnostic scenario",
             "GET /demo/scenarios - List available demo scenarios",
+            "GET /demo/progress/{cp_id} - Get scenario resolution progress",
+            "GET /demo/resolution_steps - Get required resolution steps",
             "POST /demo/clear - Clear all demo scenarios"
         ]
     }
 
 @app.get("/status")
 async def get_status():
+    # Check for active complex demo scenarios
+    active_scenarios = {}
+    diagnostic_info = {}
+    
+    for cp_id in STORE.charge_points.keys():
+        scenario = DEMO_MANAGER.get_scenario_status(cp_id)
+        if scenario and scenario.get("type") == "charging_profile_mismatch":
+            active_scenarios[cp_id] = scenario
+            # Add diagnostic information for the voice agent
+            diagnostic_info[cp_id] = {
+                "issue": "Low power delivery detected",
+                "current_power": "3.5kW",
+                "expected_power": "22kW", 
+                "root_cause": "Charging profile configuration conflicts",
+                "requires_diagnostic": True,
+                "configuration_issues": {
+                    "ChargingProfileMaxStackLevel": "8 (should be 1)",
+                    "ChargingScheduleMaxPeriods": "500 (should be 100)",
+                    "MaxChargingProfilesInstalled": "10 (should be 1)"
+                }
+            }
+        # Check for EVSE003 specifically - it has the configuration issue
+        elif cp_id == "EVSE003" and cp_id not in STORE.resolved_diagnostics:
+            diagnostic_info[cp_id] = {
+                "issue": "Low power delivery detected",
+                "current_power": "3.5kW",
+                "expected_power": "22kW", 
+                "root_cause": "Charging profile configuration conflicts",
+                "requires_diagnostic": True,
+                "configuration_issues": {
+                    "ChargingProfileMaxStackLevel": "8 (should be 1)",
+                    "ChargingScheduleMaxPeriods": "500 (should be 100)",
+                    "MaxChargingProfilesInstalled": "10 (should be 1)"
+                }
+            }
+    
     return {
         "connected_charge_points": list(STORE.charge_points.keys()),
         "status": STORE.status,
         "heartbeats": STORE.heartbeat,
-        "total_connections": len(STORE.charge_points)
+        "total_connections": len(STORE.charge_points),
+        "active_scenarios": active_scenarios,
+        "diagnostic_info": diagnostic_info
     }
 
 @app.post("/commands/reset/{cp_id}")
@@ -120,6 +161,28 @@ async def change_configuration(cp_id: str, request: ChangeConfigurationRequest):
     
     try:
         await websocket.send(json.dumps(ocpp_msg))
+        
+        # Check if this configuration change resolves the diagnostic issue for EVSE003
+        if cp_id == "EVSE003" and request.key in ["ChargingProfileMaxStackLevel", "ChargingScheduleMaxPeriods", "MaxChargingProfilesInstalled"]:
+            # Track configuration changes for diagnostic resolution
+            if cp_id not in STORE.diagnostic_config_changes:
+                STORE.diagnostic_config_changes[cp_id] = {}
+            
+            # Store the configuration change
+            STORE.diagnostic_config_changes[cp_id][request.key] = request.value
+            
+            # Check if all three diagnostic configuration keys have been set to correct values
+            required_changes = {
+                "ChargingProfileMaxStackLevel": "1",
+                "ChargingScheduleMaxPeriods": "100", 
+                "MaxChargingProfilesInstalled": "1"
+            }
+            
+            if all(STORE.diagnostic_config_changes[cp_id].get(key) == value 
+                   for key, value in required_changes.items()):
+                STORE.resolved_diagnostics.add(cp_id)
+                print(f"Diagnostic issue resolved for {cp_id} - all configuration changes completed")
+        
         return {"message": f"ChangeConfiguration command sent to {cp_id}", "payload": payload}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to send command: {str(e)}")
@@ -196,13 +259,7 @@ async def send_local_list(cp_id: str, request: SendLocalListRequest):
 @app.post("/demo/trigger/{scenario}")
 async def trigger_demo_scenario(scenario: str, cp_id: str = "EVSE001"):
     """Trigger a specific demo scenario"""
-    valid_scenarios = [
-        "session_start_failure",
-        "stuck_connector", 
-        "offline_charger",
-        "auth_failure",
-        "slow_charging"
-    ]
+    valid_scenarios = ["charging_profile_mismatch"]
     
     if scenario not in valid_scenarios:
         raise HTTPException(
@@ -218,7 +275,8 @@ async def trigger_demo_scenario(scenario: str, cp_id: str = "EVSE001"):
     return {
         "message": f"Triggered {scenario} for {cp_id}",
         "scenario": scenario,
-        "charge_point": cp_id
+        "charge_point": cp_id,
+        "description": COMPLEX_DEMO.get_scenario_description() if scenario == "charging_profile_mismatch" else "Demo scenario active"
     }
 
 @app.get("/demo/scenarios")
@@ -226,17 +284,36 @@ async def list_demo_scenarios():
     """List available demo scenarios and their descriptions"""
     return {
         "available_scenarios": {
-            "session_start_failure": "Charger shows Available but won't start transactions",
-            "stuck_connector": "Connector won't unlock after charging (ConnectorLockFailure)",
-            "offline_charger": "Charger goes offline (no heartbeats)",
-            "auth_failure": "Invalid card authorization (card not in whitelist)",
-            "slow_charging": "Very slow charging power (low MeterValues)"
+            "charging_profile_mismatch": "Complex diagnostic scenario requiring multi-step resolution. Charger delivers low power due to configuration conflicts."
         },
         "demo_commands": DEMO_MANAGER.get_demo_commands(),
         "active_scenarios": {
             cp_id: DEMO_MANAGER.get_scenario_status(cp_id) 
             for cp_id in STORE.charge_points.keys()
         }
+    }
+
+@app.get("/demo/progress/{cp_id}")
+async def get_scenario_progress(cp_id: str):
+    """Get current progress of scenario resolution"""
+    if cp_id not in STORE.charge_points:
+        raise HTTPException(status_code=404, detail=f"Charge point {cp_id} not connected")
+    
+    progress = COMPLEX_DEMO.get_progress(cp_id)
+    return {
+        "charge_point": cp_id,
+        "progress": progress,
+        "resolution_steps": COMPLEX_DEMO.get_resolution_steps() if progress.get("status") == "active" else None
+    }
+
+@app.get("/demo/resolution_steps")
+async def get_resolution_steps():
+    """Get the specific steps needed to resolve the charging profile mismatch scenario"""
+    return {
+        "scenario": "charging_profile_mismatch",
+        "steps": COMPLEX_DEMO.get_resolution_steps(),
+        "diagnostic_questions": COMPLEX_DEMO.get_diagnostic_questions(),
+        "agent_guidance": COMPLEX_DEMO.get_agent_guidance()
     }
 
 @app.post("/demo/clear")
@@ -251,6 +328,13 @@ async def clear_demo_scenarios(cp_id: Optional[str] = None):
         for cp in STORE.charge_points.keys():
             DEMO_MANAGER.clear_scenario(cp)
         return {"message": "Cleared all demo scenarios"}
+
+@app.post("/demo/reset_diagnostics")
+async def reset_diagnostics():
+    """Reset diagnostic resolution status for testing"""
+    STORE.resolved_diagnostics.clear()
+    STORE.diagnostic_config_changes.clear()
+    return {"message": "Diagnostic resolution status reset"}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

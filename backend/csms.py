@@ -27,7 +27,7 @@ class CentralSystemCP(CP):
         # Accept the charger and set heartbeat interval (seconds)
         return call_result.BootNotification(
             current_time="2025-01-01T00:00:00Z",  # RFC3339 timestamp
-            interval=30,
+            interval=60,
             status=RegistrationStatus.accepted
         )
 
@@ -47,6 +47,14 @@ class CentralSystemCP(CP):
     @on('MeterValues')
     async def on_meter_values(self, connector_id, meter_value, **kwargs):
         logging.info(f"[{self.id}] MeterValues: samples={len(meter_value)}")
+        
+        # Check if charging profile mismatch scenario is active
+        scenario = DEMO_MANAGER.get_scenario_status(self.id)
+        if scenario and scenario.get("type") == "charging_profile_mismatch":
+            logging.info(f"🎭 DEMO: Simulating low power delivery for charging profile mismatch")
+            # In a real implementation, we would modify the meter values here
+            # For now, we just log the scenario is active
+        
         return call_result.MeterValues()
 
     @on('Authorize')

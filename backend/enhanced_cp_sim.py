@@ -94,7 +94,7 @@ class EnhancedChargePointSimulator:
         logger.info(f"StatusNotification response: {response}")
 
     async def heartbeat_loop(self):
-        """Send heartbeats every 30 seconds"""
+        """Send heartbeats every 60 seconds"""
         heartbeat_id = 1
         while True:
             try:
@@ -103,7 +103,7 @@ class EnhancedChargePointSimulator:
                 response = await self.recv_ocpp_message()
                 logger.info(f"Heartbeat #{heartbeat_id} response: {response}")
                 heartbeat_id += 1
-                await asyncio.sleep(30)
+                await asyncio.sleep(60)
             except asyncio.CancelledError:
                 break
             except Exception as e:

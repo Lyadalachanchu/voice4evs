@@ -1,5 +1,7 @@
 import os
 from typing import Any, Dict, Mapping, Optional
+from collections import deque
+import time
 
 import httpx
 import logging
@@ -13,6 +15,35 @@ API_BASE = os.getenv("CSMS_API_BASE", "http://localhost:8000")
 if not logging.getLogger().handlers:
     logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Simple loop detection - track recent tool calls
+_recent_calls = deque(maxlen=10)  # Keep last 10 calls
+_call_timestamps = deque(maxlen=10)
+
+# Track diagnostic state to prevent repetition
+_diagnostic_in_progress = False
+_diagnostic_step = 0
+
+
+def _check_for_loop(tool_name: str, arguments: Dict[str, Any]) -> bool:
+    """Check if this tool call would create a loop (same call within last 30 seconds)"""
+    current_time = time.time()
+    call_signature = (tool_name, tuple(sorted(arguments.items())))
+    
+    # Clean old timestamps (older than 30 seconds)
+    while _call_timestamps and current_time - _call_timestamps[0] > 30:
+        _call_timestamps.popleft()
+        _recent_calls.popleft()
+    
+    # Check if this exact call was made recently
+    if call_signature in _recent_calls:
+        logger.warning(f"Loop detected: {tool_name} with args {arguments}")
+        return True
+    
+    # Record this call
+    _recent_calls.append(call_signature)
+    _call_timestamps.append(current_time)
+    return False
 
 
 def _error_dict(message: str, *, status_code: Optional[int] = None, details: Optional[str] = None, request: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -200,11 +231,7 @@ trigger_demo_scenario_schema = FunctionSchema(
         "scenario": {
             "type": "string",
             "enum": [
-                "session_start_failure",
-                "stuck_connector",
-                "offline_charger",
-                "auth_failure",
-                "slow_charging",
+                "charging_profile_mismatch",
             ],
             "description": "Scenario to trigger",
         },
@@ -239,6 +266,25 @@ get_status_schema = FunctionSchema(
     required=[],
 )
 
+get_scenario_progress_schema = FunctionSchema(
+    name="get_scenario_progress",
+    description="Get current progress of scenario resolution for a charge point",
+    properties={
+        "cp_id": {
+            "type": "string",
+            "description": "Charge point ID (optional; defaults to EVSE001)",
+        },
+    },
+    required=[],
+)
+
+get_resolution_steps_schema = FunctionSchema(
+    name="get_resolution_steps",
+    description="Get the specific steps needed to resolve the charging profile mismatch scenario",
+    properties={},
+    required=[],
+)
+
 
 tools = ToolsSchema(
     standard_tools=[
@@ -253,6 +299,8 @@ tools = ToolsSchema(
         list_demo_scenarios_schema,
         clear_demo_scenarios_schema,
         get_status_schema,
+        get_scenario_progress_schema,
+        get_resolution_steps_schema,
     ]
 )
 
@@ -292,11 +340,29 @@ async def _return_and_chain(params: FunctionCallParams, data: Dict[str, Any], *,
 
 
 async def handle_reset_charge_point(params: FunctionCallParams) -> None:
+    global _diagnostic_in_progress, _diagnostic_step
+    
     logger.info(f"Tool call: reset_charge_point args={dict(params.arguments)}")
+    
+    # Check for loop
+    if _check_for_loop("reset_charge_point", params.arguments):
+        error_data = _error_dict("I just tried that reset. Let me try a different approach or ask what specific issue you're seeing.")
+        await params.result_callback(error_data)
+        return
+    
     cp_id = _normalize_cp_id(params.arguments)
     reset_type = params.arguments.get("type") or "Soft"
     data = await _post(f"/commands/reset/{cp_id}", {"type": reset_type})
-    await _return_and_chain(params, data, chain_next=True)
+    
+    # If this is the final step of a diagnostic procedure, complete it
+    if _diagnostic_in_progress and reset_type == "Soft":
+        _diagnostic_in_progress = False
+        _diagnostic_step = 0
+        logger.info("Diagnostic procedure completed with reset")
+    
+    # For soft resets after diagnostic changes, don't chain (let user see the final result)
+    # For hard resets, also don't chain (they're usually standalone actions)
+    await _return_and_chain(params, data, chain_next=False)
 
 
 async def handle_change_availability(params: FunctionCallParams) -> None:
@@ -307,11 +373,20 @@ async def handle_change_availability(params: FunctionCallParams) -> None:
     if connector_id is not None:
         payload["connector_id"] = connector_id
     data = await _post(f"/commands/change_availability/{cp_id}", payload)
-    await _return_and_chain(params, data, chain_next=True)
+    await _return_and_chain(params, data, chain_next=False)
 
 
 async def handle_change_configuration(params: FunctionCallParams) -> None:
+    global _diagnostic_in_progress, _diagnostic_step
+    
     logger.info(f"Tool call: change_configuration args={dict(params.arguments)}")
+    
+    # Check for loop
+    if _check_for_loop("change_configuration", params.arguments):
+        error_data = _error_dict("I just tried that configuration change. Let me try a different approach or ask what specific issue you're seeing.")
+        await params.result_callback(error_data)
+        return
+    
     cp_id = _normalize_cp_id(params.arguments)
     key = params.arguments.get("key")
     value = params.arguments.get("value")
@@ -321,7 +396,20 @@ async def handle_change_configuration(params: FunctionCallParams) -> None:
         return
     payload = {"key": key, "value": value}
     data = await _post(f"/commands/change_configuration/{cp_id}", payload)
-    await _return_and_chain(params, data, chain_next=True)
+    
+    # For diagnostic configuration changes, chain to allow sequential execution
+    # Check if this is part of the diagnostic procedure
+    diagnostic_keys = ["ChargingProfileMaxStackLevel", "ChargingScheduleMaxPeriods", "MaxChargingProfilesInstalled"]
+    is_diagnostic = key in diagnostic_keys
+    
+    if is_diagnostic:
+        _diagnostic_in_progress = True
+        _diagnostic_step += 1
+        logger.info(f"Diagnostic step {_diagnostic_step}: {key}")
+        # For diagnostic steps, don't chain - let user respond between steps
+        await _return_and_chain(params, data, chain_next=False)
+    else:
+        await _return_and_chain(params, data, chain_next=False)
 
 
 async def handle_remote_start_transaction(params: FunctionCallParams) -> None:
@@ -337,7 +425,7 @@ async def handle_remote_start_transaction(params: FunctionCallParams) -> None:
     if connector_id is not None:
         payload["connector_id"] = connector_id
     data = await _post(f"/commands/remote_start/{cp_id}", payload)
-    await _return_and_chain(params, data, chain_next=True)
+    await _return_and_chain(params, data, chain_next=False)
 
 
 async def handle_remote_stop_transaction(params: FunctionCallParams) -> None:
@@ -348,7 +436,7 @@ async def handle_remote_stop_transaction(params: FunctionCallParams) -> None:
         return
     payload = {"transaction_id": params.arguments["transaction_id"]}
     data = await _post(f"/commands/remote_stop/{cp_id}", payload)
-    await _return_and_chain(params, data, chain_next=True)
+    await _return_and_chain(params, data, chain_next=False)
 
 
 async def handle_unlock_connector(params: FunctionCallParams) -> None:
@@ -357,7 +445,7 @@ async def handle_unlock_connector(params: FunctionCallParams) -> None:
     connector_id = _normalize_connector_id(params.arguments, default_if_missing=True)
     payload = {"connector_id": connector_id}
     data = await _post(f"/commands/unlock_connector/{cp_id}", payload)
-    await _return_and_chain(params, data, chain_next=True)
+    await _return_and_chain(params, data, chain_next=False)
 
 
 async def handle_send_local_list(params: FunctionCallParams) -> None:
@@ -372,7 +460,7 @@ async def handle_send_local_list(params: FunctionCallParams) -> None:
     status = params.arguments.get("status") or "Accepted"
     payload["status"] = status
     data = await _post(f"/commands/send_local_list/{cp_id}", payload)
-    await _return_and_chain(params, data, chain_next=True)
+    await _return_and_chain(params, data, chain_next=False)
 
 
 async def handle_trigger_demo_scenario(params: FunctionCallParams) -> None:
@@ -381,7 +469,7 @@ async def handle_trigger_demo_scenario(params: FunctionCallParams) -> None:
     cp_id = _normalize_cp_id(params.arguments) if params.arguments.get("cp_id") is not None else None
     query_params: Dict[str, Any] = {"cp_id": cp_id} if cp_id else None
     data = await _post(f"/demo/trigger/{scenario}", json={}, params=query_params)
-    await _return_and_chain(params, data, chain_next=True)
+    await _return_and_chain(params, data, chain_next=False)
 
 
 async def handle_list_demo_scenarios(params: FunctionCallParams) -> None:
@@ -395,12 +483,25 @@ async def handle_clear_demo_scenarios(params: FunctionCallParams) -> None:
     cp_id = params.arguments.get("cp_id")
     query_params: Dict[str, Any] = {"cp_id": cp_id} if cp_id else None
     data = await _post("/demo/clear", json={}, params=query_params)
-    await _return_and_chain(params, data, chain_next=True)
+    await _return_and_chain(params, data, chain_next=False)
 
 
 async def handle_get_status(params: FunctionCallParams) -> None:
     logger.info(f"Tool call: get_status args={dict(params.arguments)}")
     data = await _get("/status")
+    await _return_and_chain(params, data, chain_next=False)
+
+
+async def handle_get_scenario_progress(params: FunctionCallParams) -> None:
+    logger.info(f"Tool call: get_scenario_progress args={dict(params.arguments)}")
+    cp_id = _normalize_cp_id(params.arguments)
+    data = await _get(f"/demo/progress/{cp_id}")
+    await _return_and_chain(params, data, chain_next=False)
+
+
+async def handle_get_resolution_steps(params: FunctionCallParams) -> None:
+    logger.info(f"Tool call: get_resolution_steps args={dict(params.arguments)}")
+    data = await _get("/demo/resolution_steps")
     await _return_and_chain(params, data, chain_next=False)
 
 
@@ -416,5 +517,7 @@ def register_csms_function_handlers(llm) -> None:
     llm.register_function("list_demo_scenarios", handle_list_demo_scenarios)
     llm.register_function("clear_demo_scenarios", handle_clear_demo_scenarios)
     llm.register_function("get_status", handle_get_status)
+    llm.register_function("get_scenario_progress", handle_get_scenario_progress)
+    llm.register_function("get_resolution_steps", handle_get_resolution_steps)
 
 

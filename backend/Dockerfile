@@ -12,6 +12,7 @@ COPY config.py .
 COPY rest_api.py .
 COPY shared_store.py .
 COPY demo_scenarios.py .
+COPY complex_demo_scenario.py .
 
 # Expose ports
 EXPOSE 9000 8000

@@ -43,8 +43,8 @@ from pipecat.runner.utils import create_transport
 #from pipecat.services.cartesia.tts import CartesiaTTSService
 from pipecat.services.assemblyai.stt import AssemblyAISTTService
 from pipecat.services.deepgram.tts import DeepgramTTSService
-from pipecat.services.mistral.llm import MistralLLMService
-#from pipecat.services.openai.llm import OpenAILLMService
+#from pipecat.services.mistral.llm import MistralLLMService
+from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 from pipecat.transports.daily.transport import DailyParams
 from csms_tools import get_tools, register_csms_function_handlers
@@ -68,7 +68,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     #     voice_id="71a7ad14-091c-4e8e-a314-022ece01c121",  # British Reading Lady
     # )
 
-    llm = MistralLLMService(api_key=os.getenv("MISTRAL_API_KEY"))
+    llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"), model="gpt-4o")
 
     # Register CSMS function handlers and provide tool schemas to the LLM
     register_csms_function_handlers(llm)
