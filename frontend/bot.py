@@ -19,6 +19,7 @@ Run the bot using::
     uv run bot.py
 """
 
+import asyncio
 import os
 import logging
 import sys
@@ -45,12 +46,123 @@ from pipecat.runner.utils import create_transport
 #from pipecat.services.cartesia.tts import CartesiaTTSService
 from pipecat.services.assemblyai.stt import AssemblyAISTTService
 from pipecat.services.deepgram.tts import DeepgramTTSService
-#from pipecat.services.mistral.llm import MistralLLMService
+from pipecat.services.mistral.llm import MistralLLMService
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 from pipecat.transports.daily.transport import DailyParams
 from csms_tools import get_tools, register_csms_function_handlers
 from csms_system_prompt import CSMS_SYSTEM_PROMPT
+
+from pipecat.transports.base_transport import BaseTransport, TransportParams
+
+# class TwilioTransport(BaseTransport):
+#     def __init__(self, params: TransportParams):
+#         super().__init__(params)
+#         # here you’ll manage Twilio websocket/media stream connections
+
+#     async def input(self):
+#         # Receive Twilio audio (base64 PCM) and pass it into pipeline
+#         pass
+
+#     async def output(self):
+#         # Send pipeline’s TTS audio back to Twilio in the right format
+#         pass
+import base64
+import numpy as np
+import io
+from pydub import AudioSegment
+
+class TwilioTransport(BaseTransport):
+    def __init__(self, params: TransportParams):
+        super().__init__(params)
+        self._input_queue = asyncio.Queue()
+        self._output_queue = asyncio.Queue()
+
+    async def input(self):
+        # Wait for audio frames from Twilio
+        audio_bytes = await self._input_queue.get()  # raw PCM bytes
+        # Convert to float32 numpy array if needed
+        audio = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+        return audio
+
+    async def feed_audio_from_twilio(self, base64_payload: str):
+        # Decode base64 PCM and put in input queue
+        audio_bytes = base64.b64decode(base64_payload)
+        await self._input_queue.put(audio_bytes)
+
+    async def output(self):
+        # Wait for TTS frames from the pipeline
+        tts_audio_bytes = await self._output_queue.get()  # raw PCM bytes
+        payload = base64.b64encode(tts_audio_bytes).decode("ascii")
+        # You can now send this payload over your WebSocket to Twilio
+        return payload
+
+    async def send_audio_to_twilio(self, audio_bytes: bytes):
+        await self._output_queue.put(audio_bytes)
+
+
+# from fastapi import FastAPI, WebSocket, Request
+# from fastapi.responses import Response
+# from dotenv import load_dotenv
+# import os
+# import base64
+# import asyncio
+
+# load_dotenv()
+
+# app = FastAPI()
+# NGROK_URL = os.getenv("NGROK_URL")
+
+# # -------------------
+# # Twilio POST webhook
+# # -------------------
+# @app.post("/")
+# async def twilio_webhook(request: Request):
+#     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+# <Response>
+#     <Connect>
+#         <Stream url="{NGROK_URL}/stream"/>
+#     </Connect>
+# </Response>"""
+#     return Response(content=twiml, media_type="application/xml")
+
+# # -------------------
+# # WebSocket for Twilio Media Stream
+# # -------------------
+# @ws.websocket("/stream")
+# async def stream_endpoint(ws: WebSocket):
+#     await ws.accept()
+#     transport = TwilioTransport(transport_params["twilio"]())
+
+    
+#     try:
+#         while True:
+#             data = await ws.receive_json()
+#             media_payload = data.get("media", {}).get("payload")
+#             if media_payload:
+#                 # Feed audio into transport
+#                 await transport.feed_audio_from_twilio(media_payload)
+                
+#                 # Get TTS response from transport
+#                 tts_payload = await transport.output()
+#                 await ws.send_json({
+#                     "event": "media",
+#                     "media": {"payload": tts_payload}
+#                 })
+#     except Exception as e:
+#         print("WebSocket closed:", e)
+
+
+# @app.get("/")
+# async def test_get():
+#     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+# <Response>
+#     <Connect>
+#         <Stream url="{NGROK_URL}/stream"/>
+#     </Connect>
+# </Response>"""
+#     return Response(content=twiml, media_type="application/xml")
+
 
 logger.info("✅ All components loaded successfully!")
 
@@ -82,7 +194,8 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     #     voice_id="71a7ad14-091c-4e8e-a314-022ece01c121",  # British Reading Lady
     # )
 
-    llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"), model="gpt-4o")
+    # llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"), model="gpt-4o")
+    llm = MistralLLMService(api_key=os.getenv("MISTRAL_API_KEY"))
 
     # Register CSMS function handlers and provide tool schemas to the LLM
     register_csms_function_handlers(llm)
@@ -153,6 +266,11 @@ async def bot(runner_args: RunnerArguments):
             audio_out_enabled=True,
             vad_analyzer=SileroVADAnalyzer(),
         ),
+        "twilio": lambda: TransportParams(
+            audio_in_enabled=True,
+            audio_out_enabled=True,
+            vad_analyzer=SileroVADAnalyzer(),
+        )
     }
 
     transport = await create_transport(runner_args, transport_params)
