@@ -29,7 +29,7 @@ The bot understands, authenticates, fixes the backend issue, and your charging i
 **Agentic AI Voice Bot for EV Charging**  
 - **Natural conversation**: Voice-first assistant  
 - **Backend actions**: Not just chat → *performs real fixes* (reset charger, unplug charger etc)  
-- **Always-on**: 24/7 available  
+- **Always-on**: 24/7 available 
 
 ---
 
@@ -39,6 +39,7 @@ Unlike typical chatbots…
 - Our bot → *Understands + Executes*  
 - True **agentic behavior**: takes steps autonomously  
 - **Modular**: Can easily be extended to use cases other than the EV charger ecosystem
+- Only truly challenging problems will be escalated to qualified human technicians
 ---
 
 ## Impact
