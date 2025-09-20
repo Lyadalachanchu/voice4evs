@@ -1,5 +1,5 @@
 # ⚡ Agentic AI for EV Charging Stations
-*Voice-powered customer support that actually solves your problem.*
+*Voice-powered customer support for EVs that actually solves your problem instead of deflecting.*
 
 ---
 
