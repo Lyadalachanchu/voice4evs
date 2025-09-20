@@ -8,6 +8,19 @@ import logging
 from shared_store import STORE
 from demo_scenarios import DEMO_MANAGER
 from complex_demo_scenario import COMPLEX_DEMO
+from datetime import datetime
+import time
+from config import (
+    ALLOW_GENERIC_CHANGE_CONFIG,
+    ALLOWED_CONFIG_KEYS,
+    POWER_LIMIT_MIN_KW,
+    POWER_LIMIT_MAX_KW,
+    POWER_CHANGE_RATE_LIMIT_WINDOW_SEC,
+    POWER_CHANGE_RATE_LIMIT_MAX,
+    CONFIG_CHANGE_RATE_LIMIT_WINDOW_SEC,
+    CONFIG_CHANGE_RATE_LIMIT_MAX,
+    AUDIT_ENABLED,
+)
 
 app = FastAPI()
 
@@ -22,6 +35,10 @@ class ChangeAvailabilityRequest(BaseModel):
 class ChangeConfigurationRequest(BaseModel):
     key: str
     value: str
+
+class SetPowerLimitRequest(BaseModel):
+    limit_kw: float
+    connector_id: Optional[int] = None
 
 class RemoteStartRequest(BaseModel):
     id_tag: str
@@ -50,6 +67,7 @@ async def root():
             "POST /commands/reset/{cp_id} - Reset charge point",
             "POST /commands/change_availability/{cp_id} - Change availability",
             "POST /commands/change_configuration/{cp_id} - Change configuration",
+            "POST /commands/set_power_limit/{cp_id} - Safely set power limit (kW)",
             "POST /commands/remote_start/{cp_id} - Start charging remotely",
             "POST /commands/remote_stop/{cp_id} - Stop charging remotely",
             "POST /commands/unlock_connector/{cp_id} - Unlock connector",
@@ -169,6 +187,18 @@ async def change_configuration(cp_id: str, request: ChangeConfigurationRequest):
     if cp_id not in STORE.charge_points:
         raise HTTPException(status_code=404, detail=f"Charge point {cp_id} not connected")
     
+    # Guardrail: allowlist + rate limit
+    now = time.time()
+    STORE.config_change_events.setdefault(cp_id, [])
+    # Drop old timestamps
+    STORE.config_change_events[cp_id] = [t for t in STORE.config_change_events[cp_id] if now - t <= CONFIG_CHANGE_RATE_LIMIT_WINDOW_SEC]
+    if len(STORE.config_change_events[cp_id]) >= CONFIG_CHANGE_RATE_LIMIT_MAX:
+        raise HTTPException(status_code=429, detail="Too many configuration changes. Please wait and try again.")
+    STORE.config_change_events[cp_id].append(now)
+
+    if not ALLOW_GENERIC_CHANGE_CONFIG and request.key not in ALLOWED_CONFIG_KEYS:
+        raise HTTPException(status_code=403, detail=f"Configuration key '{request.key}' is not allowed.")
+
     websocket = STORE.charge_points[cp_id]
     payload = {
         "key": request.key,
@@ -199,10 +229,63 @@ async def change_configuration(cp_id: str, request: ChangeConfigurationRequest):
                    for key, value in required_changes.items()):
                 STORE.resolved_diagnostics.add(cp_id)
                 print(f"Diagnostic issue resolved for {cp_id} - all configuration changes completed")
+        # Audit log
+        if AUDIT_ENABLED:
+            STORE.audit_log.append({
+                "ts": datetime.utcnow().isoformat() + "Z",
+                "cp_id": cp_id,
+                "actor": "api",
+                "action": "change_configuration",
+                "details": {"key": request.key, "value": request.value}
+            })
         
         return {"message": f"ChangeConfiguration command sent to {cp_id}", "payload": payload}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to send command: {str(e)}")
+
+@app.post("/commands/set_power_limit/{cp_id}")
+async def set_power_limit(cp_id: str, request: SetPowerLimitRequest):
+    if cp_id not in STORE.charge_points:
+        raise HTTPException(status_code=404, detail=f"Charge point {cp_id} not connected")
+
+    # Validate range
+    limit_kw = float(request.limit_kw)
+    if limit_kw < POWER_LIMIT_MIN_KW or limit_kw > POWER_LIMIT_MAX_KW:
+        raise HTTPException(status_code=400, detail=f"limit_kw must be between {POWER_LIMIT_MIN_KW} and {POWER_LIMIT_MAX_KW} kW")
+
+    # Rate limit power changes
+    now = time.time()
+    STORE.power_change_events.setdefault(cp_id, [])
+    STORE.power_change_events[cp_id] = [t for t in STORE.power_change_events[cp_id] if now - t <= POWER_CHANGE_RATE_LIMIT_WINDOW_SEC]
+    if len(STORE.power_change_events[cp_id]) >= POWER_CHANGE_RATE_LIMIT_MAX:
+        raise HTTPException(status_code=429, detail="Too many power limit changes. Please wait and try again.")
+    STORE.power_change_events[cp_id].append(now)
+
+    # Persist desired limit in store (simulation)
+    STORE.power_limits.setdefault(cp_id, {"default_kw": None, "per_connector": {}})
+    if request.connector_id is not None:
+        STORE.power_limits[cp_id]["per_connector"][int(request.connector_id)] = limit_kw
+    else:
+        STORE.power_limits[cp_id]["default_kw"] = limit_kw
+
+    # In a real implementation, this would build and send a SetChargingProfile OCPP message.
+    # For the simulator, we just acknowledge and audit.
+    if AUDIT_ENABLED:
+        STORE.audit_log.append({
+            "ts": datetime.utcnow().isoformat() + "Z",
+            "cp_id": cp_id,
+            "actor": "api",
+            "action": "set_power_limit",
+            "details": {"limit_kw": limit_kw, "connector_id": request.connector_id}
+        })
+
+    return {
+        "message": f"Power limit set for {cp_id}",
+        "cp_id": cp_id,
+        "limit_kw": limit_kw,
+        "connector_id": request.connector_id,
+        "applied": True
+    }
 
 @app.post("/commands/remote_start/{cp_id}")
 async def remote_start_transaction(cp_id: str, request: RemoteStartRequest):

@@ -220,6 +220,17 @@ change_configuration_schema = FunctionSchema(
     required=["cp_id", "key", "value"],
 )
 
+set_power_limit_schema = FunctionSchema(
+    name="set_power_limit",
+    description="Safely set a power limit in kW for a charge point or connector (server enforces bounds and rate limits)",
+    properties={
+        "cp_id": {"type": "string", "description": "Charge point ID"},
+        "limit_kw": {"type": "number", "description": "Desired power limit in kW"},
+        "connector_id": {"type": "integer", "description": "Optional connector ID"},
+    },
+    required=["cp_id", "limit_kw"],
+)
+
 remote_start_transaction_schema = FunctionSchema(
     name="remote_start_transaction",
     description="Start a transaction on a charge point",
@@ -334,6 +345,7 @@ tools = ToolsSchema(
         reset_charge_point_schema,
         change_availability_schema,
         change_configuration_schema,
+        set_power_limit_schema,
         remote_start_transaction_schema,
         remote_stop_transaction_schema,
         unlock_connector_schema,
@@ -461,6 +473,28 @@ async def handle_change_configuration(params: FunctionCallParams) -> None:
         await _return_and_chain(params, data, chain_next=False)
 
 
+async def handle_set_power_limit(params: FunctionCallParams) -> None:
+    seq = _next_tool_sequence()
+    logger.info(f"[{seq}] ▶ set_power_limit {_summarize_args(params.arguments)}")
+
+    cp_id = _normalize_cp_id(params.arguments)
+    limit_kw = params.arguments.get("limit_kw")
+    try:
+        # Accept both int and float, convert to float
+        limit_kw_f = float(limit_kw)
+    except Exception:
+        await params.result_callback(_error_dict("Invalid 'limit_kw': must be a number"))
+        return
+
+    payload: Dict[str, Any] = {"limit_kw": limit_kw_f}
+    connector_id = _normalize_connector_id(params.arguments, default_if_missing=False)
+    if connector_id is not None:
+        payload["connector_id"] = connector_id
+
+    data = await _post(f"/commands/set_power_limit/{cp_id}", payload)
+    logger.info(f"[{seq}] ✔ set_power_limit → {_summarize_result(data)}")
+    await _return_and_chain(params, data, chain_next=False)
+
 async def handle_remote_start_transaction(params: FunctionCallParams) -> None:
     seq = _next_tool_sequence()
     logger.info(f"[{seq}] ▶ remote_start_transaction {_summarize_args(params.arguments)}")
@@ -578,6 +612,7 @@ def register_csms_function_handlers(llm) -> None:
     llm.register_function("reset_charge_point", handle_reset_charge_point)
     llm.register_function("change_availability", handle_change_availability)
     llm.register_function("change_configuration", handle_change_configuration)
+    llm.register_function("set_power_limit", handle_set_power_limit)
     llm.register_function("remote_start_transaction", handle_remote_start_transaction)
     llm.register_function("remote_stop_transaction", handle_remote_stop_transaction)
     llm.register_function("unlock_connector", handle_unlock_connector)
