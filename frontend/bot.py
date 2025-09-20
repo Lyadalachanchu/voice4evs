@@ -20,6 +20,8 @@ Run the bot using::
 """
 
 import os
+import logging
+import sys
 
 from dotenv import load_dotenv
 from loguru import logger
@@ -53,6 +55,18 @@ from csms_system_prompt import CSMS_SYSTEM_PROMPT
 logger.info("✅ All components loaded successfully!")
 
 load_dotenv(override=True)
+
+# Reduce verbose logs: suppress DEBUG to avoid full LLM context dumps, keep INFO+ (tool call logs)
+from loguru import logger as _loguru_logger
+_loguru_logger.remove()
+_loguru_logger.add(sys.stderr, level="INFO")
+
+# Additionally down-level specific noisy namespaces
+logging.getLogger("pipecat.services.openai.base_llm").setLevel(logging.WARNING)
+logging.getLogger("pipecat.services.openai").setLevel(logging.WARNING)
+logging.getLogger("pipecat.services").setLevel(logging.INFO)
+logging.getLogger("pipecat.processors.metrics").setLevel(logging.WARNING)
+logging.getLogger("pipecat.transports").setLevel(logging.INFO)
 
 
 async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):

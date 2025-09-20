@@ -31,6 +31,23 @@ class DemoScenarioManager:
                 "state": "diagnostic_required",
                 "started_at": datetime.now()
             }
+        elif scenario_name == "stuck_charging":
+            # Simple scenario: force CP into Charging state and ignore stop requests
+            logger.info(f"🎭 DEMO: Triggering stuck_charging for {cp_id}")
+            # Mark scenario active
+            self.active_scenarios[cp_id] = {
+                "type": "stuck_charging",
+                "state": "charging",
+                "started_at": datetime.now()
+            }
+            # Fake a transaction id for visibility
+            self.transaction_tracker[cp_id] = {"transaction_id": 4242}
+            # Ensure CP appears as Charging in status
+            STORE.status[cp_id] = {
+                "connector_id": 1,
+                "status": "Charging",
+                "error_code": "NoError",
+            }
         else:
             logger.error(f"Unknown scenario: {scenario_name}. Available: charging_profile_mismatch")
     
@@ -46,8 +63,16 @@ class DemoScenarioManager:
     def clear_scenario(self, cp_id: str):
         """Clear active scenario for a charge point"""
         if cp_id in self.active_scenarios:
+            scenario_type = self.active_scenarios[cp_id].get("type")
             del self.active_scenarios[cp_id]
             logger.info(f"🎭 DEMO: Cleared scenario for {cp_id}")
+            # Reset basic status if this was the stuck_charging scenario
+            if scenario_type == "stuck_charging":
+                STORE.status[cp_id] = {
+                    "connector_id": 1,
+                    "status": "Available",
+                    "error_code": "NoError",
+                }
     
     def is_card_valid(self, id_tag: str) -> bool:
         """Check if a card is in the whitelist"""
@@ -62,6 +87,7 @@ class DemoScenarioManager:
         """Get available demo commands for REST API"""
         return {
             "trigger_charging_profile_mismatch": "Complex scenario requiring diagnostic steps and multi-command resolution",
+            "trigger_stuck_charging": "Simple scenario: EVSE stays in Charging and ignores stop",
             "clear_scenario": "Clear all active demo scenarios",
             "list_scenarios": "Show active demo scenarios",
             "get_scenario_progress": "Get current progress of active scenario",

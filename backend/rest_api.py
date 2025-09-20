@@ -55,6 +55,7 @@ async def root():
             "POST /commands/unlock_connector/{cp_id} - Unlock connector",
             "POST /commands/send_local_list/{cp_id} - Add card to whitelist",
             "POST /demo/trigger/charging_profile_mismatch - Trigger complex diagnostic scenario",
+            "POST /demo/trigger/stuck_charging - Trigger simple scenario where CP stays in Charging",
             "GET /demo/scenarios - List available demo scenarios",
             "GET /demo/progress/{cp_id} - Get scenario resolution progress",
             "GET /demo/resolution_steps - Get required resolution steps",
@@ -84,6 +85,14 @@ async def get_status():
                     "ChargingScheduleMaxPeriods": "500 (should be 100)",
                     "MaxChargingProfilesInstalled": "10 (should be 1)"
                 }
+            }
+        elif scenario and scenario.get("type") == "stuck_charging":
+            active_scenarios[cp_id] = scenario
+            # Force status to Charging for visibility
+            STORE.status[cp_id] = {
+                "connector_id": 1,
+                "status": "Charging",
+                "error_code": "NoError",
             }
         # Check for EVSE003 specifically - it has the configuration issue
         elif cp_id == "EVSE003" and cp_id not in STORE.resolved_diagnostics:
@@ -123,6 +132,10 @@ async def reset_charge_point(cp_id: str, request: ResetRequest):
     
     try:
         await websocket.send(json.dumps(ocpp_msg))
+        # If stuck_charging demo is active and a Hard reset is issued, clear the scenario to simulate resolution
+        scenario = DEMO_MANAGER.get_scenario_status(cp_id)
+        if scenario and scenario.get("type") == "stuck_charging" and request.type == "Hard":
+            DEMO_MANAGER.clear_scenario(cp_id)
         return {"message": f"Reset command sent to {cp_id}", "type": request.type}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to send command: {str(e)}")
@@ -143,6 +156,10 @@ async def change_availability(cp_id: str, request: ChangeAvailabilityRequest):
     
     try:
         await websocket.send(json.dumps(ocpp_msg))
+        # If stuck_charging demo is active and we set Inoperative, clear the scenario to simulate breaking the stuck state
+        scenario = DEMO_MANAGER.get_scenario_status(cp_id)
+        if scenario and scenario.get("type") == "stuck_charging" and request.type == "Inoperative":
+            DEMO_MANAGER.clear_scenario(cp_id)
         return {"message": f"ChangeAvailability command sent to {cp_id}", "payload": payload}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to send command: {str(e)}")
@@ -212,6 +229,21 @@ async def remote_stop_transaction(cp_id: str, request: RemoteStopRequest):
     if cp_id not in STORE.charge_points:
         raise HTTPException(status_code=404, detail=f"Charge point {cp_id} not connected")
     
+    # If simple "stuck_charging" demo is active, ignore stop requests to simulate refusal
+    scenario = DEMO_MANAGER.get_scenario_status(cp_id)
+    if scenario and scenario.get("type") == "stuck_charging":
+        # Keep status as Charging and return an informational message
+        STORE.status[cp_id] = {
+            "connector_id": 1,
+            "status": "Charging",
+            "error_code": "NoError",
+        }
+        return {
+            "message": f"RemoteStopTransaction ignored for {cp_id} due to 'stuck_charging' demo scenario",
+            "scenario": "stuck_charging",
+            "status": STORE.status.get(cp_id)
+        }
+
     websocket = STORE.charge_points[cp_id]
     payload = {
         "transactionId": request.transaction_id
@@ -259,7 +291,7 @@ async def send_local_list(cp_id: str, request: SendLocalListRequest):
 @app.post("/demo/trigger/{scenario}")
 async def trigger_demo_scenario(scenario: str, cp_id: str = "EVSE001"):
     """Trigger a specific demo scenario"""
-    valid_scenarios = ["charging_profile_mismatch"]
+    valid_scenarios = ["charging_profile_mismatch", "stuck_charging"]
     
     if scenario not in valid_scenarios:
         raise HTTPException(
@@ -276,7 +308,10 @@ async def trigger_demo_scenario(scenario: str, cp_id: str = "EVSE001"):
         "message": f"Triggered {scenario} for {cp_id}",
         "scenario": scenario,
         "charge_point": cp_id,
-        "description": COMPLEX_DEMO.get_scenario_description() if scenario == "charging_profile_mismatch" else "Demo scenario active"
+        "description": (
+            COMPLEX_DEMO.get_scenario_description() if scenario == "charging_profile_mismatch" else
+            "Simple scenario: EVSE stays in Charging state and ignores RemoteStop"
+        )
     }
 
 @app.get("/demo/scenarios")
@@ -284,7 +319,8 @@ async def list_demo_scenarios():
     """List available demo scenarios and their descriptions"""
     return {
         "available_scenarios": {
-            "charging_profile_mismatch": "Complex diagnostic scenario requiring multi-step resolution. Charger delivers low power due to configuration conflicts."
+            "charging_profile_mismatch": "Complex diagnostic scenario requiring multi-step resolution. Charger delivers low power due to configuration conflicts.",
+            "stuck_charging": "Simple scenario: Charger remains in Charging and ignores stop commands."
         },
         "demo_commands": DEMO_MANAGER.get_demo_commands(),
         "active_scenarios": {
