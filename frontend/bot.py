@@ -47,7 +47,7 @@ from pipecat.services.deepgram.tts import DeepgramTTSService
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 from pipecat.transports.daily.transport import DailyParams
-from csms_tools import get_tools, register_csms_function_handlers
+from csms_tools import get_tools, register_csms_function_handlers, start_call_logging_session, end_call_logging_session
 from csms_system_prompt import CSMS_SYSTEM_PROMPT
 
 logger.info("✅ All components loaded successfully!")
@@ -119,6 +119,13 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
         logger.info(f"Client connected")
+        # Start a new session log file
+        try:
+            path = start_call_logging_session(session_name="webrtc")
+            if path:
+                logger.info(f"API call log file: {path}")
+        except Exception:
+            pass
         # Kick off the conversation.
         messages.append({"role": "system", "content": "Say hello and briefly introduce yourself."})
         await task.queue_frames([LLMRunFrame()])
@@ -126,6 +133,11 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
         logger.info(f"Client disconnected")
+        # End session log file
+        try:
+            end_call_logging_session()
+        except Exception:
+            pass
         await task.cancel()
 
     runner = PipelineRunner(handle_sigint=runner_args.handle_sigint)

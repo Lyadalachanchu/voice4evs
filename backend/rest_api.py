@@ -196,8 +196,16 @@ async def change_configuration(cp_id: str, request: ChangeConfigurationRequest):
         raise HTTPException(status_code=429, detail="Too many configuration changes. Please wait and try again.")
     STORE.config_change_events[cp_id].append(now)
 
+    allowed_key = True
     if not ALLOW_GENERIC_CHANGE_CONFIG and request.key not in ALLOWED_CONFIG_KEYS:
-        raise HTTPException(status_code=403, detail=f"Configuration key '{request.key}' is not allowed.")
+        allowed_key = False
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "message": f"Configuration key '{request.key}' is not allowed.",
+                "allowlisted": False,
+            },
+        )
 
     websocket = STORE.charge_points[cp_id]
     payload = {
@@ -239,7 +247,11 @@ async def change_configuration(cp_id: str, request: ChangeConfigurationRequest):
                 "details": {"key": request.key, "value": request.value}
             })
         
-        return {"message": f"ChangeConfiguration command sent to {cp_id}", "payload": payload}
+        return {
+            "message": f"ChangeConfiguration command sent to {cp_id}",
+            "payload": payload,
+            "allowlisted": allowed_key,
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to send command: {str(e)}")
 

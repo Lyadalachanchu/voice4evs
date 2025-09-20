@@ -5,6 +5,7 @@ import time
 
 import httpx
 import logging
+from datetime import datetime
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.services.llm_service import FunctionCallParams
@@ -99,10 +100,107 @@ def _error_dict(message: str, *, status_code: Optional[int] = None, details: Opt
     return err
 
 
+_CALL_LOG_PATH = os.getenv("CSMS_CALL_LOG_PATH")
+_CALL_LOG_STDOUT = os.getenv("CSMS_CALL_LOG_STDOUT", "true").lower() in ("1", "true", "yes")
+_CALL_LOG_DIR = os.getenv("CSMS_CALL_LOG_DIR", os.path.join(os.getcwd(), "csms_call_logs"))
+
+
+def start_call_logging_session(session_name: Optional[str] = None) -> Optional[str]:
+    """Start a new session log file in a constant directory. Returns path or None if disabled.
+    If CSMS_CALL_LOG_PATH is already set, this function overrides it for the session.
+    """
+    global _CALL_LOG_PATH
+    try:
+        os.makedirs(_CALL_LOG_DIR, exist_ok=True)
+        ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+        safe_name = (session_name or "session").replace("/", "_").replace(" ", "_")
+        _CALL_LOG_PATH = os.path.join(_CALL_LOG_DIR, f"{ts}_{safe_name}.ndjson")
+        return _CALL_LOG_PATH
+    except Exception:
+        return None
+
+
+def end_call_logging_session() -> None:
+    """End current session by clearing the session file path (stdout logging unaffected)."""
+    global _CALL_LOG_PATH
+    _CALL_LOG_PATH = None
+
+
+def _log_clean_api_call(method: str, path: str, *, params: Optional[Mapping[str, Any]] = None, json: Optional[Dict[str, Any]] = None) -> None:
+    """Emit a single clean line with timestamp, method, path, params, body. Optionally also append to a file.
+    Format: {"ts":"...","method":"GET","path":"/status","params":{...},"body":{...}}
+    """
+    try:
+        ts = datetime.utcnow().isoformat() + "Z"
+        entry: Dict[str, Any] = {
+            "ts": ts,
+            "method": method,
+            "path": path,
+            "params": dict(params) if params else None,
+            "body": dict(json) if isinstance(json, dict) else (json if json is not None else None),
+        }
+        import json as _json
+        line = _json.dumps(entry, ensure_ascii=False, separators=(",", ":"))
+        if _CALL_LOG_STDOUT:
+            print(line)
+        if _CALL_LOG_PATH:
+            try:
+                with open(_CALL_LOG_PATH, "a", encoding="utf-8") as f:
+                    f.write(line + "\n")
+            except Exception:
+                pass
+    except Exception:
+        # Never let logging break tool calls
+        pass
+
+
+def _extract_cp_id_from_path(path: str) -> Optional[str]:
+    try:
+        parts = [p for p in path.split("/") if p]
+        # Expect last two parts like: command_name, cp_id
+        if len(parts) >= 2:
+            maybe_cp = parts[-1]
+            # Simple heuristic: cp ids like EVSExxx or arbitrary strings
+            return maybe_cp
+    except Exception:
+        pass
+    return None
+
+
 async def _post(path: str, json: Dict[str, Any], params: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
     try:
+        _log_clean_api_call("POST", path, params=params, json=json)
         async with httpx.AsyncClient() as client:
-            r = await client.post(f"{API_BASE}{path}", json=json, params=params, timeout=15)
+            url = f"{API_BASE}{path}"
+            r = await client.post(url, json=json, params=params, timeout=15)
+            # Log response summary
+            try:
+                cp_id = _extract_cp_id_from_path(path)
+                resp_body = None
+                try:
+                    resp_body = r.json()
+                except Exception:
+                    resp_body = {"text": r.text[:200]}
+                summary = {
+                    "ts": datetime.utcnow().isoformat() + "Z",
+                    "status": r.status_code,
+                    "path": path,
+                    "cp_id": cp_id,
+                    "result_keys": list(resp_body.keys()) if isinstance(resp_body, dict) else None,
+                    "allowlisted": resp_body.get("allowlisted") if isinstance(resp_body, dict) else None,
+                }
+                import json as _json
+                line = _json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
+                if _CALL_LOG_STDOUT:
+                    print(line)
+                if _CALL_LOG_PATH:
+                    try:
+                        with open(_CALL_LOG_PATH, "a", encoding="utf-8") as f:
+                            f.write(line + "\n")
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             if r.status_code >= 400:
                 body_text: Optional[str] = None
                 try:
@@ -128,8 +226,37 @@ async def _post(path: str, json: Dict[str, Any], params: Optional[Mapping[str, A
 
 async def _get(path: str, params: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
     try:
+        _log_clean_api_call("GET", path, params=params, json=None)
         async with httpx.AsyncClient() as client:
-            r = await client.get(f"{API_BASE}{path}", params=params, timeout=15)
+            url = f"{API_BASE}{path}"
+            r = await client.get(url, params=params, timeout=15)
+            # Log response summary
+            try:
+                cp_id = _extract_cp_id_from_path(path)
+                resp_body = None
+                try:
+                    resp_body = r.json()
+                except Exception:
+                    resp_body = {"text": r.text[:200]}
+                summary = {
+                    "ts": datetime.utcnow().isoformat() + "Z",
+                    "status": r.status_code,
+                    "path": path,
+                    "cp_id": cp_id,
+                    "result_keys": list(resp_body.keys()) if isinstance(resp_body, dict) else None,
+                }
+                import json as _json
+                line = _json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
+                if _CALL_LOG_STDOUT:
+                    print(line)
+                if _CALL_LOG_PATH:
+                    try:
+                        with open(_CALL_LOG_PATH, "a", encoding="utf-8") as f:
+                            f.write(line + "\n")
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             if r.status_code >= 400:
                 body_text: Optional[str] = None
                 try:

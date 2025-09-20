@@ -1,0 +1,14 @@
+{"ts":"2025-09-20T14:59:32.065303Z","method":"GET","path":"/status","params":null,"body":null}
+{"ts":"2025-09-20T14:59:32.103298Z","status":200,"path":"/status","cp_id":null,"result_keys":["connected_charge_points","status","heartbeats","total_connections","active_scenarios","diagnostic_info"]}
+{"ts":"2025-09-20T14:59:33.516338Z","method":"GET","path":"/status","params":null,"body":null}
+{"ts":"2025-09-20T14:59:33.573439Z","status":200,"path":"/status","cp_id":null,"result_keys":["connected_charge_points","status","heartbeats","total_connections","active_scenarios","diagnostic_info"]}
+{"ts":"2025-09-20T14:59:50.842875Z","method":"POST","path":"/commands/change_configuration/EVSE005","params":null,"body":{"key":"ChargingProfileMaxStackLevel","value":"1"}}
+{"ts":"2025-09-20T14:59:50.878356Z","method":"POST","path":"/commands/change_configuration/EVSE005","params":null,"body":{"key":"ChargingScheduleMaxPeriods","value":"100"}}
+{"ts":"2025-09-20T14:59:50.896827Z","method":"POST","path":"/commands/change_configuration/EVSE005","params":null,"body":{"key":"MaxChargingProfilesInstalled","value":"1"}}
+{"ts":"2025-09-20T14:59:50.932216Z","status":200,"path":"/commands/change_configuration/EVSE005","cp_id":"EVSE005","result_keys":["message","payload","allowlisted"],"allowlisted":true}
+{"ts":"2025-09-20T14:59:50.933219Z","status":200,"path":"/commands/change_configuration/EVSE005","cp_id":"EVSE005","result_keys":["message","payload","allowlisted"],"allowlisted":true}
+{"ts":"2025-09-20T14:59:50.934145Z","status":200,"path":"/commands/change_configuration/EVSE005","cp_id":"EVSE005","result_keys":["message","payload","allowlisted"],"allowlisted":true}
+{"ts":"2025-09-20T14:59:51.599316Z","method":"POST","path":"/commands/reset/EVSE005","params":null,"body":{"type":"Soft"}}
+{"ts":"2025-09-20T14:59:51.624983Z","status":200,"path":"/commands/reset/EVSE005","cp_id":"EVSE005","result_keys":["message","type"],"allowlisted":null}
+{"ts":"2025-09-20T14:59:52.168302Z","method":"GET","path":"/status","params":null,"body":null}
+{"ts":"2025-09-20T14:59:52.219612Z","status":200,"path":"/status","cp_id":null,"result_keys":["connected_charge_points","status","heartbeats","total_connections","active_scenarios","diagnostic_info"]}

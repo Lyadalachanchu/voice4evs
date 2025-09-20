@@ -27,7 +27,7 @@ from pipecat.transports.network.fastapi_websocket import (
 from pipecat.serializers.twilio import TwilioFrameSerializer
 
 # Project prompt/tools
-from csms_tools import get_tools, register_csms_function_handlers
+from csms_tools import get_tools, register_csms_function_handlers, start_call_logging_session, end_call_logging_session
 from csms_system_prompt import CSMS_SYSTEM_PROMPT
 
 
@@ -126,12 +126,23 @@ async def run_bot_twilio(websocket_client: WebSocket, stream_sid: str, call_sid:
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
+        # Start a new per-call log file
+        try:
+            path = start_call_logging_session(session_name=f"twilio_{call_sid}")
+            if path:
+                print(f"API call log file: {path}")
+        except Exception:
+            pass
         # Kick off conversation
         messages.append({"role": "system", "content": "Say hello and briefly introduce yourself."})
         await task.queue_frames([LLMRunFrame()])
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
+        try:
+            end_call_logging_session()
+        except Exception:
+            pass
         await task.cancel()
 
     runner = PipelineRunner(handle_sigint=False, force_gc=True)
