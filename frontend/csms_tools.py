@@ -5,6 +5,7 @@ import time
 
 import httpx
 import logging
+from datetime import datetime
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.services.llm_service import FunctionCallParams
@@ -23,6 +24,48 @@ _call_timestamps = deque(maxlen=10)
 # Track diagnostic state to prevent repetition
 _diagnostic_in_progress = False
 _diagnostic_step = 0
+
+# Tool call sequencing for concise, ordered debugging
+_tool_sequence_counter = 0
+
+
+def _next_tool_sequence() -> int:
+    global _tool_sequence_counter
+    _tool_sequence_counter += 1
+    return _tool_sequence_counter
+
+
+def _summarize_result(data: Dict[str, Any]) -> str:
+    try:
+        if not isinstance(data, dict):
+            text = str(data)
+            return text[:300] + ("…" if len(text) > 300 else "")
+        if "error" in data:
+            return f"error={data.get('error')} status={data.get('status_code')}"
+        if "message" in data:
+            return f"message={data.get('message')}"
+        # Generic: show top-level keys and basic sizes to avoid verbosity
+        parts = []
+        for k, v in data.items():
+            if isinstance(v, (list, tuple, set)):
+                parts.append(f"{k}[{len(v)}]")
+            elif isinstance(v, dict):
+                parts.append(f"{k}{{{len(v)}}}")
+            else:
+                s = str(v)
+                parts.append(f"{k}={s[:40]}{'…' if len(s) > 40 else ''}")
+        joined = ", ".join(parts)
+        return joined[:300] + ("…" if len(joined) > 300 else "")
+    except Exception:
+        return "<unprintable result>"
+
+
+def _summarize_args(args: Mapping[str, Any]) -> str:
+    try:
+        s = str(dict(args))
+        return f"args={s[:200]}{'…' if len(s) > 200 else ''}"
+    except Exception:
+        return "args=<unprintable>"
 
 
 def _check_for_loop(tool_name: str, arguments: Dict[str, Any]) -> bool:
@@ -57,10 +100,107 @@ def _error_dict(message: str, *, status_code: Optional[int] = None, details: Opt
     return err
 
 
+_CALL_LOG_PATH = os.getenv("CSMS_CALL_LOG_PATH")
+_CALL_LOG_STDOUT = os.getenv("CSMS_CALL_LOG_STDOUT", "true").lower() in ("1", "true", "yes")
+_CALL_LOG_DIR = os.getenv("CSMS_CALL_LOG_DIR", os.path.join(os.getcwd(), "csms_call_logs"))
+
+
+def start_call_logging_session(session_name: Optional[str] = None) -> Optional[str]:
+    """Start a new session log file in a constant directory. Returns path or None if disabled.
+    If CSMS_CALL_LOG_PATH is already set, this function overrides it for the session.
+    """
+    global _CALL_LOG_PATH
+    try:
+        os.makedirs(_CALL_LOG_DIR, exist_ok=True)
+        ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+        safe_name = (session_name or "session").replace("/", "_").replace(" ", "_")
+        _CALL_LOG_PATH = os.path.join(_CALL_LOG_DIR, f"{ts}_{safe_name}.ndjson")
+        return _CALL_LOG_PATH
+    except Exception:
+        return None
+
+
+def end_call_logging_session() -> None:
+    """End current session by clearing the session file path (stdout logging unaffected)."""
+    global _CALL_LOG_PATH
+    _CALL_LOG_PATH = None
+
+
+def _log_clean_api_call(method: str, path: str, *, params: Optional[Mapping[str, Any]] = None, json: Optional[Dict[str, Any]] = None) -> None:
+    """Emit a single clean line with timestamp, method, path, params, body. Optionally also append to a file.
+    Format: {"ts":"...","method":"GET","path":"/status","params":{...},"body":{...}}
+    """
+    try:
+        ts = datetime.utcnow().isoformat() + "Z"
+        entry: Dict[str, Any] = {
+            "ts": ts,
+            "method": method,
+            "path": path,
+            "params": dict(params) if params else None,
+            "body": dict(json) if isinstance(json, dict) else (json if json is not None else None),
+        }
+        import json as _json
+        line = _json.dumps(entry, ensure_ascii=False, separators=(",", ":"))
+        if _CALL_LOG_STDOUT:
+            print(line)
+        if _CALL_LOG_PATH:
+            try:
+                with open(_CALL_LOG_PATH, "a", encoding="utf-8") as f:
+                    f.write(line + "\n")
+            except Exception:
+                pass
+    except Exception:
+        # Never let logging break tool calls
+        pass
+
+
+def _extract_cp_id_from_path(path: str) -> Optional[str]:
+    try:
+        parts = [p for p in path.split("/") if p]
+        # Expect last two parts like: command_name, cp_id
+        if len(parts) >= 2:
+            maybe_cp = parts[-1]
+            # Simple heuristic: cp ids like EVSExxx or arbitrary strings
+            return maybe_cp
+    except Exception:
+        pass
+    return None
+
+
 async def _post(path: str, json: Dict[str, Any], params: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
     try:
+        _log_clean_api_call("POST", path, params=params, json=json)
         async with httpx.AsyncClient() as client:
-            r = await client.post(f"{API_BASE}{path}", json=json, params=params, timeout=15)
+            url = f"{API_BASE}{path}"
+            r = await client.post(url, json=json, params=params, timeout=15)
+            # Log response summary
+            try:
+                cp_id = _extract_cp_id_from_path(path)
+                resp_body = None
+                try:
+                    resp_body = r.json()
+                except Exception:
+                    resp_body = {"text": r.text[:200]}
+                summary = {
+                    "ts": datetime.utcnow().isoformat() + "Z",
+                    "status": r.status_code,
+                    "path": path,
+                    "cp_id": cp_id,
+                    "result_keys": list(resp_body.keys()) if isinstance(resp_body, dict) else None,
+                    "allowlisted": resp_body.get("allowlisted") if isinstance(resp_body, dict) else None,
+                }
+                import json as _json
+                line = _json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
+                if _CALL_LOG_STDOUT:
+                    print(line)
+                if _CALL_LOG_PATH:
+                    try:
+                        with open(_CALL_LOG_PATH, "a", encoding="utf-8") as f:
+                            f.write(line + "\n")
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             if r.status_code >= 400:
                 body_text: Optional[str] = None
                 try:
@@ -86,8 +226,37 @@ async def _post(path: str, json: Dict[str, Any], params: Optional[Mapping[str, A
 
 async def _get(path: str, params: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
     try:
+        _log_clean_api_call("GET", path, params=params, json=None)
         async with httpx.AsyncClient() as client:
-            r = await client.get(f"{API_BASE}{path}", params=params, timeout=15)
+            url = f"{API_BASE}{path}"
+            r = await client.get(url, params=params, timeout=15)
+            # Log response summary
+            try:
+                cp_id = _extract_cp_id_from_path(path)
+                resp_body = None
+                try:
+                    resp_body = r.json()
+                except Exception:
+                    resp_body = {"text": r.text[:200]}
+                summary = {
+                    "ts": datetime.utcnow().isoformat() + "Z",
+                    "status": r.status_code,
+                    "path": path,
+                    "cp_id": cp_id,
+                    "result_keys": list(resp_body.keys()) if isinstance(resp_body, dict) else None,
+                }
+                import json as _json
+                line = _json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
+                if _CALL_LOG_STDOUT:
+                    print(line)
+                if _CALL_LOG_PATH:
+                    try:
+                        with open(_CALL_LOG_PATH, "a", encoding="utf-8") as f:
+                            f.write(line + "\n")
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             if r.status_code >= 400:
                 body_text: Optional[str] = None
                 try:
@@ -178,6 +347,17 @@ change_configuration_schema = FunctionSchema(
     required=["cp_id", "key", "value"],
 )
 
+set_power_limit_schema = FunctionSchema(
+    name="set_power_limit",
+    description="Safely set a power limit in kW for a charge point or connector (server enforces bounds and rate limits)",
+    properties={
+        "cp_id": {"type": "string", "description": "Charge point ID"},
+        "limit_kw": {"type": "number", "description": "Desired power limit in kW"},
+        "connector_id": {"type": "integer", "description": "Optional connector ID"},
+    },
+    required=["cp_id", "limit_kw"],
+)
+
 remote_start_transaction_schema = FunctionSchema(
     name="remote_start_transaction",
     description="Start a transaction on a charge point",
@@ -232,6 +412,7 @@ trigger_demo_scenario_schema = FunctionSchema(
             "type": "string",
             "enum": [
                 "charging_profile_mismatch",
+                "stuck_charging",
             ],
             "description": "Scenario to trigger",
         },
@@ -291,6 +472,7 @@ tools = ToolsSchema(
         reset_charge_point_schema,
         change_availability_schema,
         change_configuration_schema,
+        set_power_limit_schema,
         remote_start_transaction_schema,
         remote_stop_transaction_schema,
         unlock_connector_schema,
@@ -342,7 +524,8 @@ async def _return_and_chain(params: FunctionCallParams, data: Dict[str, Any], *,
 async def handle_reset_charge_point(params: FunctionCallParams) -> None:
     global _diagnostic_in_progress, _diagnostic_step
     
-    logger.info(f"Tool call: reset_charge_point args={dict(params.arguments)}")
+    seq = _next_tool_sequence()
+    logger.info(f"[{seq}] ▶ reset_charge_point {_summarize_args(params.arguments)}")
     
     # Check for loop
     if _check_for_loop("reset_charge_point", params.arguments):
@@ -353,6 +536,7 @@ async def handle_reset_charge_point(params: FunctionCallParams) -> None:
     cp_id = _normalize_cp_id(params.arguments)
     reset_type = params.arguments.get("type") or "Soft"
     data = await _post(f"/commands/reset/{cp_id}", {"type": reset_type})
+    logger.info(f"[{seq}] ✔ reset_charge_point → {_summarize_result(data)}")
     
     # If this is the final step of a diagnostic procedure, complete it
     if _diagnostic_in_progress and reset_type == "Soft":
@@ -366,20 +550,23 @@ async def handle_reset_charge_point(params: FunctionCallParams) -> None:
 
 
 async def handle_change_availability(params: FunctionCallParams) -> None:
-    logger.info(f"Tool call: change_availability args={dict(params.arguments)}")
+    seq = _next_tool_sequence()
+    logger.info(f"[{seq}] ▶ change_availability {_summarize_args(params.arguments)}")
     cp_id = _normalize_cp_id(params.arguments)
     payload: Dict[str, Any] = {"type": params.arguments["type"]}
     connector_id = _normalize_connector_id(params.arguments, default_if_missing=False)
     if connector_id is not None:
         payload["connector_id"] = connector_id
     data = await _post(f"/commands/change_availability/{cp_id}", payload)
+    logger.info(f"[{seq}] ✔ change_availability → {_summarize_result(data)}")
     await _return_and_chain(params, data, chain_next=False)
 
 
 async def handle_change_configuration(params: FunctionCallParams) -> None:
     global _diagnostic_in_progress, _diagnostic_step
     
-    logger.info(f"Tool call: change_configuration args={dict(params.arguments)}")
+    seq = _next_tool_sequence()
+    logger.info(f"[{seq}] ▶ change_configuration {_summarize_args(params.arguments)}")
     
     # Check for loop
     if _check_for_loop("change_configuration", params.arguments):
@@ -396,6 +583,7 @@ async def handle_change_configuration(params: FunctionCallParams) -> None:
         return
     payload = {"key": key, "value": value}
     data = await _post(f"/commands/change_configuration/{cp_id}", payload)
+    logger.info(f"[{seq}] ✔ change_configuration → {_summarize_result(data)}")
     
     # For diagnostic configuration changes, chain to allow sequential execution
     # Check if this is part of the diagnostic procedure
@@ -412,8 +600,31 @@ async def handle_change_configuration(params: FunctionCallParams) -> None:
         await _return_and_chain(params, data, chain_next=False)
 
 
+async def handle_set_power_limit(params: FunctionCallParams) -> None:
+    seq = _next_tool_sequence()
+    logger.info(f"[{seq}] ▶ set_power_limit {_summarize_args(params.arguments)}")
+
+    cp_id = _normalize_cp_id(params.arguments)
+    limit_kw = params.arguments.get("limit_kw")
+    try:
+        # Accept both int and float, convert to float
+        limit_kw_f = float(limit_kw)
+    except Exception:
+        await params.result_callback(_error_dict("Invalid 'limit_kw': must be a number"))
+        return
+
+    payload: Dict[str, Any] = {"limit_kw": limit_kw_f}
+    connector_id = _normalize_connector_id(params.arguments, default_if_missing=False)
+    if connector_id is not None:
+        payload["connector_id"] = connector_id
+
+    data = await _post(f"/commands/set_power_limit/{cp_id}", payload)
+    logger.info(f"[{seq}] ✔ set_power_limit → {_summarize_result(data)}")
+    await _return_and_chain(params, data, chain_next=False)
+
 async def handle_remote_start_transaction(params: FunctionCallParams) -> None:
-    logger.info(f"Tool call: remote_start_transaction args={dict(params.arguments)}")
+    seq = _next_tool_sequence()
+    logger.info(f"[{seq}] ▶ remote_start_transaction {_summarize_args(params.arguments)}")
     cp_id = _normalize_cp_id(params.arguments)
     id_tag = params.arguments.get("id_tag")
     err = _validate_non_empty_str("id_tag", id_tag)
@@ -425,31 +636,37 @@ async def handle_remote_start_transaction(params: FunctionCallParams) -> None:
     if connector_id is not None:
         payload["connector_id"] = connector_id
     data = await _post(f"/commands/remote_start/{cp_id}", payload)
+    logger.info(f"[{seq}] ✔ remote_start_transaction → {_summarize_result(data)}")
     await _return_and_chain(params, data, chain_next=False)
 
 
 async def handle_remote_stop_transaction(params: FunctionCallParams) -> None:
-    logger.info(f"Tool call: remote_stop_transaction args={dict(params.arguments)}")
+    seq = _next_tool_sequence()
+    logger.info(f"[{seq}] ▶ remote_stop_transaction {_summarize_args(params.arguments)}")
     cp_id = _normalize_cp_id(params.arguments)
     if "transaction_id" not in params.arguments:
         await params.result_callback(_error_dict("Missing 'transaction_id'"))
         return
     payload = {"transaction_id": params.arguments["transaction_id"]}
     data = await _post(f"/commands/remote_stop/{cp_id}", payload)
+    logger.info(f"[{seq}] ✔ remote_stop_transaction → {_summarize_result(data)}")
     await _return_and_chain(params, data, chain_next=False)
 
 
 async def handle_unlock_connector(params: FunctionCallParams) -> None:
-    logger.info(f"Tool call: unlock_connector args={dict(params.arguments)}")
+    seq = _next_tool_sequence()
+    logger.info(f"[{seq}] ▶ unlock_connector {_summarize_args(params.arguments)}")
     cp_id = _normalize_cp_id(params.arguments)
     connector_id = _normalize_connector_id(params.arguments, default_if_missing=True)
     payload = {"connector_id": connector_id}
     data = await _post(f"/commands/unlock_connector/{cp_id}", payload)
+    logger.info(f"[{seq}] ✔ unlock_connector → {_summarize_result(data)}")
     await _return_and_chain(params, data, chain_next=False)
 
 
 async def handle_send_local_list(params: FunctionCallParams) -> None:
-    logger.info(f"Tool call: send_local_list args={dict(params.arguments)}")
+    seq = _next_tool_sequence()
+    logger.info(f"[{seq}] ▶ send_local_list {_summarize_args(params.arguments)}")
     cp_id = _normalize_cp_id(params.arguments)
     id_tag = params.arguments.get("id_tag")
     err = _validate_non_empty_str("id_tag", id_tag)
@@ -460,48 +677,61 @@ async def handle_send_local_list(params: FunctionCallParams) -> None:
     status = params.arguments.get("status") or "Accepted"
     payload["status"] = status
     data = await _post(f"/commands/send_local_list/{cp_id}", payload)
+    logger.info(f"[{seq}] ✔ send_local_list → {_summarize_result(data)}")
     await _return_and_chain(params, data, chain_next=False)
 
 
 async def handle_trigger_demo_scenario(params: FunctionCallParams) -> None:
-    logger.info(f"Tool call: trigger_demo_scenario args={dict(params.arguments)}")
+    seq = _next_tool_sequence()
+    logger.info(f"[{seq}] ▶ trigger_demo_scenario {_summarize_args(params.arguments)}")
     scenario = params.arguments["scenario"]
     cp_id = _normalize_cp_id(params.arguments) if params.arguments.get("cp_id") is not None else None
     query_params: Dict[str, Any] = {"cp_id": cp_id} if cp_id else None
     data = await _post(f"/demo/trigger/{scenario}", json={}, params=query_params)
+    logger.info(f"[{seq}] ✔ trigger_demo_scenario → {_summarize_result(data)}")
     await _return_and_chain(params, data, chain_next=False)
 
 
 async def handle_list_demo_scenarios(params: FunctionCallParams) -> None:
-    logger.info(f"Tool call: list_demo_scenarios args={dict(params.arguments)}")
+    seq = _next_tool_sequence()
+    logger.info(f"[{seq}] ▶ list_demo_scenarios {_summarize_args(params.arguments)}")
     data = await _get("/demo/scenarios")
+    logger.info(f"[{seq}] ✔ list_demo_scenarios → {_summarize_result(data)}")
     await _return_and_chain(params, data, chain_next=False)
 
 
 async def handle_clear_demo_scenarios(params: FunctionCallParams) -> None:
-    logger.info(f"Tool call: clear_demo_scenarios args={dict(params.arguments)}")
+    seq = _next_tool_sequence()
+    logger.info(f"[{seq}] ▶ clear_demo_scenarios {_summarize_args(params.arguments)}")
     cp_id = params.arguments.get("cp_id")
     query_params: Dict[str, Any] = {"cp_id": cp_id} if cp_id else None
     data = await _post("/demo/clear", json={}, params=query_params)
+    logger.info(f"[{seq}] ✔ clear_demo_scenarios → {_summarize_result(data)}")
     await _return_and_chain(params, data, chain_next=False)
 
 
 async def handle_get_status(params: FunctionCallParams) -> None:
-    logger.info(f"Tool call: get_status args={dict(params.arguments)}")
+    seq = _next_tool_sequence()
+    logger.info(f"[{seq}] ▶ get_status {_summarize_args(params.arguments)}")
     data = await _get("/status")
+    logger.info(f"[{seq}] ✔ get_status → {_summarize_result(data)}")
     await _return_and_chain(params, data, chain_next=False)
 
 
 async def handle_get_scenario_progress(params: FunctionCallParams) -> None:
-    logger.info(f"Tool call: get_scenario_progress args={dict(params.arguments)}")
+    seq = _next_tool_sequence()
+    logger.info(f"[{seq}] ▶ get_scenario_progress {_summarize_args(params.arguments)}")
     cp_id = _normalize_cp_id(params.arguments)
     data = await _get(f"/demo/progress/{cp_id}")
+    logger.info(f"[{seq}] ✔ get_scenario_progress → {_summarize_result(data)}")
     await _return_and_chain(params, data, chain_next=False)
 
 
 async def handle_get_resolution_steps(params: FunctionCallParams) -> None:
-    logger.info(f"Tool call: get_resolution_steps args={dict(params.arguments)}")
+    seq = _next_tool_sequence()
+    logger.info(f"[{seq}] ▶ get_resolution_steps {_summarize_args(params.arguments)}")
     data = await _get("/demo/resolution_steps")
+    logger.info(f"[{seq}] ✔ get_resolution_steps → {_summarize_result(data)}")
     await _return_and_chain(params, data, chain_next=False)
 
 
@@ -509,6 +739,7 @@ def register_csms_function_handlers(llm) -> None:
     llm.register_function("reset_charge_point", handle_reset_charge_point)
     llm.register_function("change_availability", handle_change_availability)
     llm.register_function("change_configuration", handle_change_configuration)
+    llm.register_function("set_power_limit", handle_set_power_limit)
     llm.register_function("remote_start_transaction", handle_remote_start_transaction)
     llm.register_function("remote_stop_transaction", handle_remote_stop_transaction)
     llm.register_function("unlock_connector", handle_unlock_connector)

@@ -8,6 +8,19 @@ import logging
 from shared_store import STORE
 from demo_scenarios import DEMO_MANAGER
 from complex_demo_scenario import COMPLEX_DEMO
+from datetime import datetime
+import time
+from config import (
+    ALLOW_GENERIC_CHANGE_CONFIG,
+    ALLOWED_CONFIG_KEYS,
+    POWER_LIMIT_MIN_KW,
+    POWER_LIMIT_MAX_KW,
+    POWER_CHANGE_RATE_LIMIT_WINDOW_SEC,
+    POWER_CHANGE_RATE_LIMIT_MAX,
+    CONFIG_CHANGE_RATE_LIMIT_WINDOW_SEC,
+    CONFIG_CHANGE_RATE_LIMIT_MAX,
+    AUDIT_ENABLED,
+)
 
 app = FastAPI()
 
@@ -22,6 +35,10 @@ class ChangeAvailabilityRequest(BaseModel):
 class ChangeConfigurationRequest(BaseModel):
     key: str
     value: str
+
+class SetPowerLimitRequest(BaseModel):
+    limit_kw: float
+    connector_id: Optional[int] = None
 
 class RemoteStartRequest(BaseModel):
     id_tag: str
@@ -50,11 +67,13 @@ async def root():
             "POST /commands/reset/{cp_id} - Reset charge point",
             "POST /commands/change_availability/{cp_id} - Change availability",
             "POST /commands/change_configuration/{cp_id} - Change configuration",
+            "POST /commands/set_power_limit/{cp_id} - Safely set power limit (kW)",
             "POST /commands/remote_start/{cp_id} - Start charging remotely",
             "POST /commands/remote_stop/{cp_id} - Stop charging remotely",
             "POST /commands/unlock_connector/{cp_id} - Unlock connector",
             "POST /commands/send_local_list/{cp_id} - Add card to whitelist",
             "POST /demo/trigger/charging_profile_mismatch - Trigger complex diagnostic scenario",
+            "POST /demo/trigger/stuck_charging - Trigger simple scenario where CP stays in Charging",
             "GET /demo/scenarios - List available demo scenarios",
             "GET /demo/progress/{cp_id} - Get scenario resolution progress",
             "GET /demo/resolution_steps - Get required resolution steps",
@@ -84,6 +103,14 @@ async def get_status():
                     "ChargingScheduleMaxPeriods": "500 (should be 100)",
                     "MaxChargingProfilesInstalled": "10 (should be 1)"
                 }
+            }
+        elif scenario and scenario.get("type") == "stuck_charging":
+            active_scenarios[cp_id] = scenario
+            # Force status to Charging for visibility
+            STORE.status[cp_id] = {
+                "connector_id": 1,
+                "status": "Charging",
+                "error_code": "NoError",
             }
         # Check for EVSE003 specifically - it has the configuration issue
         elif cp_id == "EVSE003" and cp_id not in STORE.resolved_diagnostics:
@@ -123,6 +150,10 @@ async def reset_charge_point(cp_id: str, request: ResetRequest):
     
     try:
         await websocket.send(json.dumps(ocpp_msg))
+        # If stuck_charging demo is active and a Hard reset is issued, clear the scenario to simulate resolution
+        scenario = DEMO_MANAGER.get_scenario_status(cp_id)
+        if scenario and scenario.get("type") == "stuck_charging" and request.type == "Hard":
+            DEMO_MANAGER.clear_scenario(cp_id)
         return {"message": f"Reset command sent to {cp_id}", "type": request.type}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to send command: {str(e)}")
@@ -143,6 +174,10 @@ async def change_availability(cp_id: str, request: ChangeAvailabilityRequest):
     
     try:
         await websocket.send(json.dumps(ocpp_msg))
+        # If stuck_charging demo is active and we set Inoperative, clear the scenario to simulate breaking the stuck state
+        scenario = DEMO_MANAGER.get_scenario_status(cp_id)
+        if scenario and scenario.get("type") == "stuck_charging" and request.type == "Inoperative":
+            DEMO_MANAGER.clear_scenario(cp_id)
         return {"message": f"ChangeAvailability command sent to {cp_id}", "payload": payload}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to send command: {str(e)}")
@@ -152,6 +187,26 @@ async def change_configuration(cp_id: str, request: ChangeConfigurationRequest):
     if cp_id not in STORE.charge_points:
         raise HTTPException(status_code=404, detail=f"Charge point {cp_id} not connected")
     
+    # Guardrail: allowlist + rate limit
+    now = time.time()
+    STORE.config_change_events.setdefault(cp_id, [])
+    # Drop old timestamps
+    STORE.config_change_events[cp_id] = [t for t in STORE.config_change_events[cp_id] if now - t <= CONFIG_CHANGE_RATE_LIMIT_WINDOW_SEC]
+    if len(STORE.config_change_events[cp_id]) >= CONFIG_CHANGE_RATE_LIMIT_MAX:
+        raise HTTPException(status_code=429, detail="Too many configuration changes. Please wait and try again.")
+    STORE.config_change_events[cp_id].append(now)
+
+    allowed_key = True
+    if not ALLOW_GENERIC_CHANGE_CONFIG and request.key not in ALLOWED_CONFIG_KEYS:
+        allowed_key = False
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "message": f"Configuration key '{request.key}' is not allowed.",
+                "allowlisted": False,
+            },
+        )
+
     websocket = STORE.charge_points[cp_id]
     payload = {
         "key": request.key,
@@ -182,10 +237,67 @@ async def change_configuration(cp_id: str, request: ChangeConfigurationRequest):
                    for key, value in required_changes.items()):
                 STORE.resolved_diagnostics.add(cp_id)
                 print(f"Diagnostic issue resolved for {cp_id} - all configuration changes completed")
+        # Audit log
+        if AUDIT_ENABLED:
+            STORE.audit_log.append({
+                "ts": datetime.utcnow().isoformat() + "Z",
+                "cp_id": cp_id,
+                "actor": "api",
+                "action": "change_configuration",
+                "details": {"key": request.key, "value": request.value}
+            })
         
-        return {"message": f"ChangeConfiguration command sent to {cp_id}", "payload": payload}
+        return {
+            "message": f"ChangeConfiguration command sent to {cp_id}",
+            "payload": payload,
+            "allowlisted": allowed_key,
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to send command: {str(e)}")
+
+@app.post("/commands/set_power_limit/{cp_id}")
+async def set_power_limit(cp_id: str, request: SetPowerLimitRequest):
+    if cp_id not in STORE.charge_points:
+        raise HTTPException(status_code=404, detail=f"Charge point {cp_id} not connected")
+
+    # Validate range
+    limit_kw = float(request.limit_kw)
+    if limit_kw < POWER_LIMIT_MIN_KW or limit_kw > POWER_LIMIT_MAX_KW:
+        raise HTTPException(status_code=400, detail=f"limit_kw must be between {POWER_LIMIT_MIN_KW} and {POWER_LIMIT_MAX_KW} kW")
+
+    # Rate limit power changes
+    now = time.time()
+    STORE.power_change_events.setdefault(cp_id, [])
+    STORE.power_change_events[cp_id] = [t for t in STORE.power_change_events[cp_id] if now - t <= POWER_CHANGE_RATE_LIMIT_WINDOW_SEC]
+    if len(STORE.power_change_events[cp_id]) >= POWER_CHANGE_RATE_LIMIT_MAX:
+        raise HTTPException(status_code=429, detail="Too many power limit changes. Please wait and try again.")
+    STORE.power_change_events[cp_id].append(now)
+
+    # Persist desired limit in store (simulation)
+    STORE.power_limits.setdefault(cp_id, {"default_kw": None, "per_connector": {}})
+    if request.connector_id is not None:
+        STORE.power_limits[cp_id]["per_connector"][int(request.connector_id)] = limit_kw
+    else:
+        STORE.power_limits[cp_id]["default_kw"] = limit_kw
+
+    # In a real implementation, this would build and send a SetChargingProfile OCPP message.
+    # For the simulator, we just acknowledge and audit.
+    if AUDIT_ENABLED:
+        STORE.audit_log.append({
+            "ts": datetime.utcnow().isoformat() + "Z",
+            "cp_id": cp_id,
+            "actor": "api",
+            "action": "set_power_limit",
+            "details": {"limit_kw": limit_kw, "connector_id": request.connector_id}
+        })
+
+    return {
+        "message": f"Power limit set for {cp_id}",
+        "cp_id": cp_id,
+        "limit_kw": limit_kw,
+        "connector_id": request.connector_id,
+        "applied": True
+    }
 
 @app.post("/commands/remote_start/{cp_id}")
 async def remote_start_transaction(cp_id: str, request: RemoteStartRequest):
@@ -212,6 +324,21 @@ async def remote_stop_transaction(cp_id: str, request: RemoteStopRequest):
     if cp_id not in STORE.charge_points:
         raise HTTPException(status_code=404, detail=f"Charge point {cp_id} not connected")
     
+    # If simple "stuck_charging" demo is active, ignore stop requests to simulate refusal
+    scenario = DEMO_MANAGER.get_scenario_status(cp_id)
+    if scenario and scenario.get("type") == "stuck_charging":
+        # Keep status as Charging and return an informational message
+        STORE.status[cp_id] = {
+            "connector_id": 1,
+            "status": "Charging",
+            "error_code": "NoError",
+        }
+        return {
+            "message": f"RemoteStopTransaction ignored for {cp_id} due to 'stuck_charging' demo scenario",
+            "scenario": "stuck_charging",
+            "status": STORE.status.get(cp_id)
+        }
+
     websocket = STORE.charge_points[cp_id]
     payload = {
         "transactionId": request.transaction_id
@@ -259,7 +386,7 @@ async def send_local_list(cp_id: str, request: SendLocalListRequest):
 @app.post("/demo/trigger/{scenario}")
 async def trigger_demo_scenario(scenario: str, cp_id: str = "EVSE001"):
     """Trigger a specific demo scenario"""
-    valid_scenarios = ["charging_profile_mismatch"]
+    valid_scenarios = ["charging_profile_mismatch", "stuck_charging"]
     
     if scenario not in valid_scenarios:
         raise HTTPException(
@@ -276,7 +403,10 @@ async def trigger_demo_scenario(scenario: str, cp_id: str = "EVSE001"):
         "message": f"Triggered {scenario} for {cp_id}",
         "scenario": scenario,
         "charge_point": cp_id,
-        "description": COMPLEX_DEMO.get_scenario_description() if scenario == "charging_profile_mismatch" else "Demo scenario active"
+        "description": (
+            COMPLEX_DEMO.get_scenario_description() if scenario == "charging_profile_mismatch" else
+            "Simple scenario: EVSE stays in Charging state and ignores RemoteStop"
+        )
     }
 
 @app.get("/demo/scenarios")
@@ -284,7 +414,9 @@ async def list_demo_scenarios():
     """List available demo scenarios and their descriptions"""
     return {
         "available_scenarios": {
-            "charging_profile_mismatch": "Complex diagnostic scenario requiring multi-step resolution. Charger delivers low power due to configuration conflicts."
+            "charging_profile_mismatch": "Complex diagnostic scenario requiring multi-step resolution. Charger delivers low power due to configuration conflicts.",
+            "stuck_charging": "Simple scenario: Charger remains in Charging and ignores stop commands.",
+            "locked_connector": "Connector lock fault: Unlock requests are refused (simulated)."
         },
         "demo_commands": DEMO_MANAGER.get_demo_commands(),
         "active_scenarios": {

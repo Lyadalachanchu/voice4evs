@@ -1,0 +1,6 @@
+{"ts":"2025-09-20T14:47:31.595271Z","method":"GET","path":"/status","params":null,"body":null}
+{"ts":"2025-09-20T14:47:47.777879Z","method":"POST","path":"/commands/change_configuration/EVSE003","params":null,"body":{"key":"ChargingProfileMaxStackLevel","value":"1"}}
+{"ts":"2025-09-20T14:47:47.796000Z","method":"POST","path":"/commands/change_configuration/EVSE003","params":null,"body":{"key":"ChargingScheduleMaxPeriods","value":"100"}}
+{"ts":"2025-09-20T14:47:47.812007Z","method":"POST","path":"/commands/change_configuration/EVSE003","params":null,"body":{"key":"MaxChargingProfilesInstalled","value":"1"}}
+{"ts":"2025-09-20T14:47:48.824361Z","method":"POST","path":"/commands/reset/EVSE003","params":null,"body":{"type":"Soft"}}
+{"ts":"2025-09-20T14:47:49.949397Z","method":"GET","path":"/status","params":null,"body":null}

@@ -20,6 +20,8 @@ Run the bot using::
 """
 
 import os
+import logging
+import sys
 
 from dotenv import load_dotenv
 from loguru import logger
@@ -40,19 +42,29 @@ from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
 from pipecat.processors.frameworks.rtvi import RTVIConfig, RTVIObserver, RTVIProcessor
 from pipecat.runner.types import RunnerArguments
 from pipecat.runner.utils import create_transport
-#from pipecat.services.cartesia.tts import CartesiaTTSService
 from pipecat.services.assemblyai.stt import AssemblyAISTTService
 from pipecat.services.deepgram.tts import DeepgramTTSService
-#from pipecat.services.mistral.llm import MistralLLMService
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 from pipecat.transports.daily.transport import DailyParams
-from csms_tools import get_tools, register_csms_function_handlers
+from csms_tools import get_tools, register_csms_function_handlers, start_call_logging_session, end_call_logging_session
 from csms_system_prompt import CSMS_SYSTEM_PROMPT
 
 logger.info("✅ All components loaded successfully!")
 
 load_dotenv(override=True)
+
+# Reduce verbose logs: suppress DEBUG to avoid full LLM context dumps, keep INFO+ (tool call logs)
+from loguru import logger as _loguru_logger
+_loguru_logger.remove()
+_loguru_logger.add(sys.stderr, level="INFO")
+
+# Additionally down-level specific noisy namespaces
+logging.getLogger("pipecat.services.openai.base_llm").setLevel(logging.WARNING)
+logging.getLogger("pipecat.services.openai").setLevel(logging.WARNING)
+logging.getLogger("pipecat.services").setLevel(logging.INFO)
+logging.getLogger("pipecat.processors.metrics").setLevel(logging.WARNING)
+logging.getLogger("pipecat.transports").setLevel(logging.INFO)
 
 
 async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
@@ -63,10 +75,6 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     stt = AssemblyAISTTService(
         api_key=os.getenv("ASSEMBLYAI_API_KEY"),
     )
-    # tts = CartesiaTTSService(
-    #     api_key=os.getenv("CARTESIA_API_KEY"),
-    #     voice_id="71a7ad14-091c-4e8e-a314-022ece01c121",  # British Reading Lady
-    # )
 
     llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"), model="gpt-4o")
 
@@ -111,6 +119,13 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
         logger.info(f"Client connected")
+        # Start a new session log file
+        try:
+            path = start_call_logging_session(session_name="webrtc")
+            if path:
+                logger.info(f"API call log file: {path}")
+        except Exception:
+            pass
         # Kick off the conversation.
         messages.append({"role": "system", "content": "Say hello and briefly introduce yourself."})
         await task.queue_frames([LLMRunFrame()])
@@ -118,6 +133,11 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
         logger.info(f"Client disconnected")
+        # End session log file
+        try:
+            end_call_logging_session()
+        except Exception:
+            pass
         await task.cancel()
 
     runner = PipelineRunner(handle_sigint=runner_args.handle_sigint)
