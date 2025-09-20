@@ -116,6 +116,11 @@ class CentralSystemCP(CP):
     @on('UnlockConnector')
     async def on_unlock_connector(self, connector_id, **kwargs):
         logging.info(f"[{self.id}] UnlockConnector: connector={connector_id}")
+        # If locked_connector demo is active for this CP, refuse unlock
+        scenario = DEMO_MANAGER.get_scenario_status(self.id)
+        if scenario and scenario.get("type") == "locked_connector":
+            logging.info(f"🎭 DEMO: locked_connector active → refusing unlock")
+            return call_result.UnlockConnector(status="NotSupported")
         return call_result.UnlockConnector(status="Unlocked")
 
 async def on_connect(websocket, path):
@@ -158,7 +163,24 @@ async def main():
     # Start WebSocket server
     async with serve(on_connect, CSMS_HOST, CSMS_PORT, subprotocols=["ocpp1.6"]):
         logging.info(f"CSMS listening on ws://{CSMS_HOST}:{CSMS_PORT}")
-        await asyncio.Future()  # run forever
+        # Auto-trigger demo scenarios when specific CPs connect and are registered
+        # Poll for EVSE003 and EVSE005, then trigger scenarios once
+        triggered = {"EVSE003": False, "EVSE005": False}
+        while True:
+            try:
+                # Trigger complex diagnostic on EVSE003 once present
+                if not triggered["EVSE003"] and "EVSE003" in STORE.charge_points:
+                    await DEMO_MANAGER.trigger_scenario("charging_profile_mismatch", "EVSE003")
+                    triggered["EVSE003"] = True
+                    logging.info("🎭 DEMO: Auto-triggered charging_profile_mismatch for EVSE003")
+                # Trigger locked_connector on EVSE005 once present
+                if not triggered["EVSE005"] and "EVSE005" in STORE.charge_points:
+                    await DEMO_MANAGER.trigger_scenario("locked_connector", "EVSE005")
+                    triggered["EVSE005"] = True
+                    logging.info("🎭 DEMO: Auto-triggered locked_connector for EVSE005")
+            except Exception as e:
+                logging.error(f"Auto-trigger loop error: {e}")
+            await asyncio.sleep(1)
 
 if __name__ == "__main__":
     asyncio.run(main())

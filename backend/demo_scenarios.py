@@ -48,6 +48,20 @@ class DemoScenarioManager:
                 "status": "Charging",
                 "error_code": "NoError",
             }
+        elif scenario_name == "locked_connector":
+            # New scenario: UnlockConnector requests are refused to simulate a stuck/locked cable
+            logger.info(f"🎭 DEMO: Triggering locked_connector for {cp_id}")
+            self.active_scenarios[cp_id] = {
+                "type": "locked_connector",
+                "state": "locked",
+                "started_at": datetime.now()
+            }
+            # Reflect a locked state in status (for visibility)
+            STORE.status[cp_id] = {
+                "connector_id": 1,
+                "status": "Charging",  # Typically user tries to unplug after charging; keep as Charging for demo
+                "error_code": "NoError",
+            }
         else:
             logger.error(f"Unknown scenario: {scenario_name}. Available: charging_profile_mismatch")
     
@@ -88,6 +102,7 @@ class DemoScenarioManager:
         return {
             "trigger_charging_profile_mismatch": "Complex scenario requiring diagnostic steps and multi-command resolution",
             "trigger_stuck_charging": "Simple scenario: EVSE stays in Charging and ignores stop",
+            "trigger_locked_connector": "Connector lock fault: Unlock requests are refused (simulated)",
             "clear_scenario": "Clear all active demo scenarios",
             "list_scenarios": "Show active demo scenarios",
             "get_scenario_progress": "Get current progress of active scenario",

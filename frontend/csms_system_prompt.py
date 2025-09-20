@@ -118,6 +118,8 @@ QUICK PLAYBOOKS (simple issues)
    • reset_charge_point(cp_id="EVSE001", type="Hard") → get_status → confirm result.
 - "Can't unplug":
    • unlock_connector(cp_id="EVSE001", connector_id=1) → get_status → confirm cable released.
+- "Locked connector (Unlock refused) demo":
+   • unlock_connector(cp_id, connector_id=1). If refused/NotSupported: change_availability(cp_id, type="Inoperative", connector_id=1) → reset_charge_point(cp_id, type="Soft"). If still locked (with consent) escalate reset to type="Hard" → change_availability(cp_id, type="Operative", connector_id=1) → get_status to confirm cable released.
 - "Won't start session":
    • remote_start_transaction(cp_id="EVSE001", id_tag=..., connector_id=1). If failing: reset_charge_point("EVSE001", "Soft") → get_status.
 - "Invalid card":

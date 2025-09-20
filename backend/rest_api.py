@@ -415,7 +415,8 @@ async def list_demo_scenarios():
     return {
         "available_scenarios": {
             "charging_profile_mismatch": "Complex diagnostic scenario requiring multi-step resolution. Charger delivers low power due to configuration conflicts.",
-            "stuck_charging": "Simple scenario: Charger remains in Charging and ignores stop commands."
+            "stuck_charging": "Simple scenario: Charger remains in Charging and ignores stop commands.",
+            "locked_connector": "Connector lock fault: Unlock requests are refused (simulated)."
         },
         "demo_commands": DEMO_MANAGER.get_demo_commands(),
         "active_scenarios": {
