@@ -21,9 +21,8 @@ The bot understands, authenticates, fixes the backend issue, and your charging i
 ## The Problem
 - Long wait times for EV driver support  
 - Repetitive calls & no instant resolutions  
-- Businesses struggle with scale and costs; with increasing number of chargers, the customer support calls are more variable: people tend to charge at specific peak times. This is the reason existing human only EV customer support firms are going bankrupt.
+- Businesses struggle with scale and costs; with increasing number of chargers, the customer support calls are more variable: people tend to charge at specific peak times. This is the reason existing human only EV customer support firms are going bankrupt. And number of charging points is only growing faster YoY.
 <img width="574" height="235" alt="image" src="https://github.com/user-attachments/assets/6eb61e32-cf22-425d-b7f5-32dad9563e09" />
-- Number of charging points is only growing faster:
 <img width="598" height="400" alt="image" src="https://github.com/user-attachments/assets/9614b2f9-562a-416b-89b1-d68c1cc17424" />
 
 
