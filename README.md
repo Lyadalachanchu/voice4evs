@@ -59,3 +59,10 @@ Unlike typical chatbots…
 - Scale as much as you need based on your fleet growth
 
 ---
+
+**Our Stack**:
+- LLM: OpenAI GPT4o/Mistral Large
+- TTS: Elevenlabs
+- STT: Assembly.ai
+- Python implementation of the OCPP 1.6 protocol
+- Python implementation of a basic Chargining Station Management System software (CSMS)
