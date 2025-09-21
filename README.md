@@ -1,4 +1,4 @@
-# ⚡ Agentic AI for EV Charging Stations
+# ⚡ Elektra: Agentic AI for EV Charging Stations
 *Voice-powered customer support for EVs that actually solves your problem instead of deflecting.*
 
 ---
