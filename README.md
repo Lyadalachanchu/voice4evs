@@ -34,7 +34,7 @@ The bot understands, authenticates, fixes the backend issue, and your charging i
 - **Natural conversation**: Voice-first assistant -> You don't want to pull out your laptop to write an email on the road.
 - **Backend actions**: Not just chat → *performs real fixes* (fix charger configuration, reset charger, unplug charger etc)  
 - **Always-on and scalable**: 24/7 available + scales on demand
-- **Realistic**: Uses the Open Charge Point Protocol (OCPP) 1.6 protocol, a protocol that almost all chargers use to communicate with the Chargining Station Management System software (CSMS). This means our agent can be dropped into an existing charging network with minimal changes to it!
+- **Realistic**: Uses the Open Charge Point Protocol (OCPP) 1.6 protocol, a protocol that almost all chargers use to communicate with the Charging Station Management System software (CSMS). This means our agent can be dropped into an existing charging network with minimal changes to it!
 
 ---
 
@@ -65,4 +65,4 @@ Unlike typical chatbots…
 - TTS: Elevenlabs
 - STT: Assembly.ai
 - Python implementation of the OCPP 1.6 protocol
-- Python implementation of a basic Chargining Station Management System software (CSMS)
+- Python implementation of a basic Charging Station Management System software (CSMS)
